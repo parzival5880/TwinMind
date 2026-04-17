@@ -5,6 +5,8 @@ import { useAudio } from "@/hooks/useAudio";
 type AudioRecorderProps = {
   error?: string | null;
   isRecording?: boolean;
+  isSpeaking?: boolean;
+  isTranscribing?: boolean;
   onAudioChunk?: (blob: Blob, timestamp: Date) => void;
   onStartRecording?: () => Promise<void> | void;
   onStopRecording?: () => void;
@@ -23,6 +25,8 @@ const formatRecordingDuration = (durationMs: number) => {
 export function AudioRecorder({
   error,
   isRecording,
+  isSpeaking,
+  isTranscribing,
   onAudioChunk,
   onStartRecording,
   onStopRecording,
@@ -38,7 +42,9 @@ export function AudioRecorder({
     typeof error === "string";
 
   const resolvedIsRecording = isControlled ? Boolean(isRecording) : internalAudio.isRecording;
+  const resolvedIsSpeaking = isControlled ? Boolean(isSpeaking) : internalAudio.isSpeaking;
   const resolvedError = isControlled ? error ?? null : internalAudio.error;
+  const resolvedIsTranscribing = isControlled ? Boolean(isTranscribing) : internalAudio.isTranscribing;
   const resolvedDurationMs = isControlled
     ? recordingDurationMs ?? 0
     : internalAudio.recordingDurationMs;
@@ -75,11 +81,10 @@ export function AudioRecorder({
               Audio Capture
             </p>
             <h2 className="text-2xl font-semibold tracking-tight text-slate-950">
-              Record your microphone in 8-second chunks.
+              Record with overlapping, VAD-aware windows.
             </h2>
             <p className="max-w-xl text-sm leading-6 text-slate-600">
-              The recorder requests microphone access, emits audio blobs on a fixed interval, and
-              safely handles permission or compatibility failures.
+              Start the mic to stream audio into overlapping windows, skip long silence, and keep transcript updates arriving in order.
             </p>
           </div>
 
@@ -91,7 +96,11 @@ export function AudioRecorder({
               <span
                 aria-hidden="true"
                 className={`inline-flex h-3.5 w-3.5 rounded-full ${
-                  resolvedIsRecording ? "animate-pulse bg-rose-500 shadow-[0_0_0_8px_rgba(244,63,94,0.16)]" : "bg-slate-300"
+                  resolvedIsRecording && resolvedIsSpeaking
+                    ? "animate-pulse bg-rose-500 shadow-[0_0_0_8px_rgba(244,63,94,0.16)]"
+                    : resolvedIsRecording
+                      ? "bg-slate-400 shadow-[0_0_0_8px_rgba(148,163,184,0.12)]"
+                      : "bg-slate-300"
                 }`}
               />
               <div>
@@ -100,7 +109,9 @@ export function AudioRecorder({
                 </p>
                 <p className="mt-1 text-sm font-semibold text-slate-900">
                   {resolvedIsRecording
-                    ? `Recording... ${formatRecordingDuration(resolvedDurationMs)}`
+                    ? resolvedIsSpeaking
+                      ? `Recording... ${formatRecordingDuration(resolvedDurationMs)}`
+                      : `Listening... ${formatRecordingDuration(resolvedDurationMs)}`
                     : "Not Recording"}
                 </p>
               </div>
@@ -130,18 +141,45 @@ export function AudioRecorder({
             {resolvedIsRecording ? "Stop Recording" : "Start Recording"}
           </button>
           <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
-            Default chunk interval: 8 seconds
+            15-second windows every 12 seconds with VAD-aware overlap
           </p>
         </div>
 
+        {resolvedIsTranscribing ? (
+          <div
+            aria-live="polite"
+            className="rounded-[1.25rem] border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800"
+            role="status"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <p className="font-medium">Transcribing...</p>
+              <span className="text-xs uppercase tracking-[0.16em] text-teal-700">Loading</span>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-teal-100">
+              <div className="skeleton-shimmer h-full w-1/2 rounded-full bg-teal-300/70" />
+            </div>
+          </div>
+        ) : null}
+
         {resolvedError ? (
-          <p
+          <div
             aria-live="assertive"
             className="rounded-[1.25rem] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
             role="alert"
           >
-            {resolvedError}
-          </p>
+            <p>{resolvedError}</p>
+            {resolvedError.toLowerCase().includes("grant mic access") ? (
+              <button
+                className="mt-3 rounded-full border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 hover:border-rose-500 hover:text-rose-800"
+                type="button"
+                onClick={() => {
+                  void handleToggleRecording();
+                }}
+              >
+                Grant mic access
+              </button>
+            ) : null}
+          </div>
         ) : null}
 
         {resolvedTranscriptionNotice ? (

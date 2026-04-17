@@ -7,7 +7,9 @@ import {
   initializeGroqClient,
   validateGroqApiKey,
 } from "@/lib/groq-client";
-import type { Suggestion, SuggestionsRequest, SuggestionsResponse } from "@/lib/types";
+import type { SuggestionsRequest, SuggestionsResponse } from "@/lib/types";
+
+export const runtime = "edge";
 
 const buildResponse = ({
   error,
@@ -23,21 +25,6 @@ const buildResponse = ({
   timestamp,
 });
 
-const isSuggestion = (value: unknown): value is Suggestion => {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const candidate = value as Record<string, unknown>;
-
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.type === "string" &&
-    typeof candidate.preview === "string" &&
-    typeof candidate.full_content === "string" &&
-    (candidate.trigger === undefined || typeof candidate.trigger === "string")
-  );
-};
 
 const isSuggestionsRequest = (value: unknown): value is SuggestionsRequest => {
   if (typeof value !== "object" || value === null) {
@@ -56,9 +43,6 @@ const isSuggestionsRequest = (value: unknown): value is SuggestionsRequest => {
     (candidate.avoid_phrases === undefined ||
       (Array.isArray(candidate.avoid_phrases) &&
         candidate.avoid_phrases.every((phrase) => typeof phrase === "string"))) &&
-    (candidate.previous_suggestions === undefined ||
-      (Array.isArray(candidate.previous_suggestions) &&
-        candidate.previous_suggestions.every(isSuggestion))) &&
     (candidate.context_window === undefined || typeof candidate.context_window === "number") &&
     (candidate.prompt_template === undefined || typeof candidate.prompt_template === "string")
   );

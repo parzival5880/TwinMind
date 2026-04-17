@@ -9,6 +9,8 @@ import {
 } from "@/lib/groq-client";
 import type { TranscribeResponse } from "@/lib/types";
 
+export const runtime = "edge";
+
 const buildResponse = (
   response: Omit<TranscribeResponse, "timestamp"> & { timestamp?: string },
 ) => ({
@@ -54,6 +56,7 @@ export async function POST(request: Request) {
   }
 
   const audioValue = formData.get("audio");
+  const promptValue = formData.get("prompt");
 
   if (!(audioValue instanceof Blob) || audioValue.size === 0) {
     return NextResponse.json(
@@ -72,12 +75,16 @@ export async function POST(request: Request) {
 
     initializeGroqClient(resolvedApiKey);
 
-    const text = await transcribeAudio(audioValue);
+    const result = await transcribeAudio(audioValue, {
+      prompt: typeof promptValue === "string" ? promptValue : undefined,
+    });
 
     return NextResponse.json(
       buildResponse({
         success: true,
-        text,
+        text: result.text,
+        startMs: result.startMs,
+        endMs: result.endMs,
         timestamp,
       }),
     );

@@ -10,6 +10,7 @@ export type Suggestion = {
   type: "question" | "talking_point" | "answer" | "fact_check" | "clarification";
   preview: string;
   full_content: string;
+  evidence_quote: string;
   trigger?: string;
 };
 
@@ -30,6 +31,11 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  errorMessage?: string;
+  isStreaming?: boolean;
+  requestMessage?: string;
+  requestPromptTemplate?: string;
+  streamError?: boolean;
 };
 
 export type SerializedChatMessage = {
@@ -62,6 +68,8 @@ export type TranscribeResponse = {
   text: string;
   timestamp: string;
   error?: string;
+  startMs?: number;
+  endMs?: number;
 };
 
 export type SuggestionsRequest = {
@@ -71,7 +79,6 @@ export type SuggestionsRequest = {
   rolling_summary?: string;
   recent_chat_topics?: string;
   avoid_phrases?: string[];
-  previous_suggestions?: Suggestion[];
   context_window?: number;
   prompt_template?: string;
 };
@@ -110,3 +117,11 @@ export type ChatResponse = {
   timestamp: string;
   error?: string;
 };
+
+export type ChatStreamEvent =
+  | {
+      token: string;
+    }
+  | {
+      error: string;
+    };

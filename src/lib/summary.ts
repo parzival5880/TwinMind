@@ -8,8 +8,8 @@ import type { TranscriptChunk } from "@/lib/types";
 // verbatim recent window.
 const SUMMARY_MODEL = "llama-3.1-8b-instant";
 const SUMMARY_TIMEOUT_MS = 15_000;
-const SUMMARY_MAX_WORDS = 300;
-const SUMMARY_MAX_TOKENS = 600;
+const SUMMARY_MAX_WORDS = 120;
+const SUMMARY_MAX_TOKENS = 260;
 
 export type SummaryChunkInput = {
   timestamp: string;

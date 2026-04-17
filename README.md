@@ -1,180 +1,110 @@
-# TwinMind - Live Suggestions Assistant
+# TwinMind
 
-TwinMind is a real-time meeting copilot that captures microphone audio, transcribes it in short chunks, generates three context-aware suggestions every 30 seconds, and lets users expand those suggestions into detailed chat answers. The project is built as a single Next.js codebase with typed API routes, client hooks, and a responsive multi-panel UI.
-
-**Deployed URL:** [https://twinmind-two.vercel.app](https://twinmind-two.vercel.app)
-
-## Features
-
-- Live microphone capture with chunked recording via `MediaRecorder`
-- Real-time transcription through Groq Whisper Large V3
-- Automatic suggestion generation every 30 seconds when transcript context changes
-- Three varied suggestions per batch with deduplication against earlier batches
-- Expandable suggestion cards with grounded long-form follow-up content
-- Session chat panel for direct user questions and suggestion-to-answer flow
-- Persistent prompt and API key settings via browser `localStorage`
-- Export full session data as JSON or human-readable text
-- Responsive UI for desktop, tablet, and mobile
-
-## Tech Stack
-
-- Frontend: Next.js 14+ App Router, TypeScript, React, Tailwind CSS
-- Backend: Next.js API Routes
-- AI: Groq API (`whisper-large-v3`, `openai/gpt-oss-120b`)
-- Deployment: Vercel
-
-Note: the current workspace is running on Next.js 16 and follows the same App Router architecture requested for Next.js 14+.
-
-## Setup
-
-### Local Development
-
-1. Clone the repository.
-2. Install dependencies:
-
-```bash
-npm install
-```
-
-3. Create `.env.local`:
-
-```bash
-NEXT_PUBLIC_GROQ_API_KEY=your_key_here
-NEXT_PUBLIC_APP_NAME=TwinMind
-```
-
-4. Start the development server:
-
-```bash
-npm run dev
-```
-
-5. Open [http://localhost:3000](http://localhost:3000).
-
-### Verification Commands
-
-```bash
-npx tsc --noEmit
-npm run lint
-npm run build
-```
-
-### Get Groq API Key
-
-Create or manage your Groq API key in the Groq Console: [console.groq.com](https://console.groq.com)
-
-## Prompt Strategy
-
-### Live Suggestions
-
-Live suggestions use a recent transcript window of roughly 2000 tokens by default. The prompt is designed to return exactly three suggestions with varied types so the UI offers breadth instead of three near-duplicates. Each batch is grounded with:
-
-- The latest transcript window trimmed from the end for recency
-- The newest transcript chunk so the model reacts to what just changed
-- Previous suggestions so repeated ideas are discouraged
-
-The response is constrained to strict JSON, validated to exactly three items, and checked for:
-
-- unique content
-- mixed types
-- at least one question
-- concise previews
-- expanded `full_content` within the target length range
-
-### Detailed Answers
-
-Detailed answers use a larger context window of roughly 4000 tokens by default. When a suggestion is clicked, its preview becomes the user query and the detailed-answer prompt is used to generate a fuller response grounded in the transcript. The current implementation keeps temperature low-to-moderate to reduce drift while still allowing useful phrasing and structure.
-
-### Chat
-
-The chat path keeps one continuous in-memory session per page load. It injects:
-
-- a trimmed transcript window
-- the most recent chat messages for continuity
-- the latest user message as the active query
-
-Typed chat and suggestion-click answers share the same backend route and model, but they can use different prompt templates through settings.
+## TL;DR
+- TwinMind is a real-time meeting copilot: it listens to live mic audio, transcribes it, surfaces 3 context-aware suggestions every 30 seconds, and turns suggestions into grounded chat answers.
+- Stack: Next.js App Router, TypeScript, React, Tailwind, Groq Whisper Large V3, Groq `openai/gpt-oss-120b`, and `llama-3.1-8b-instant` for background summarization.
+- Local run: clone, install, add a Groq key to `.env.local`, then `npm run dev`.
+- Deployed URL: [https://twinmind-two.vercel.app](https://twinmind-two.vercel.app)
+- Groq key: [https://console.groq.com](https://console.groq.com)
 
 ## Architecture
 
-### Directory Structure
-
 ```text
-src/
-├── app/
-│   ├── api/
-│   │   ├── chat/           # Detailed-answer generation route
-│   │   ├── suggestions/    # Live suggestions route
-│   │   └── transcribe/     # Audio transcription route
-│   ├── settings/           # Full-page settings UI
-│   ├── layout.tsx          # Root layout and metadata
-│   └── page.tsx            # Main meeting workspace
-├── components/             # UI panels, modal, buttons, recorder
-├── hooks/                  # Client state and API integration hooks
-├── lib/
-│   ├── export.ts           # Session export helpers
-│   ├── groq-client.ts      # Groq wrapper and typed error handling
-│   ├── prompts.ts          # Default prompts and context helpers
-│   └── types.ts            # Shared TypeScript models
-└── styles/
-    └── globals.css         # Global theme and responsive layout styling
+[Browser Mic]
+  -> MediaRecorder (1s slices -> 15s windows / 3s overlap + VAD)
+  -> /api/transcribe (edge)
+  -> Groq Whisper v3
+  -> Transcript State
+  -> /api/suggestions (edge, every 30s; prefetch starts at 28s)
+  -> Groq gpt-oss-120b
+  -> 3 suggestions (current implementation: validated batch + loading skeletons)
+  -> Click suggestion
+  -> /api/chat (edge)
+  -> Groq gpt-oss-120b (SSE stream)
 ```
 
-### Data Flow
+Code anchors:
+- audio capture / overlap / VAD: `src/hooks/useAudio.ts`, `src/lib/vad.ts`
+- transcription route: `src/app/api/transcribe/route.ts`
+- suggestions route + hook: `src/app/api/suggestions/route.ts`, `src/hooks/useSuggestions.ts`
+- chat SSE route + hook: `src/app/api/chat/route.ts`, `src/hooks/useChat.ts`
 
-`mic -> /api/transcribe -> transcript -> /api/suggestions -> UI -> click -> /api/chat -> detailed answer`
+## Prompt Strategy
 
-More concretely:
+This is the most important part of the project. The quality bar is not “can the model answer?”; it is “does the answer feel timely, specific, and safe enough to trust in a live meeting?”
 
-1. `useAudio` records microphone input in 8-second chunks.
-2. Each chunk posts to `/api/transcribe`.
-3. The transcript is appended to the left panel.
-4. Every 30 seconds, if the transcript changed, `useSuggestions` calls `/api/suggestions`.
-5. New suggestion batches appear at the top of the middle panel.
-6. Clicking a suggestion sends it into chat through `/api/chat`.
-7. The right panel shows the assistant’s detailed answer in chronological order.
+- Meeting-type classification stays inside the main suggestions prompt instead of becoming a separate API call. That saves one network hop and one model round-trip, but more importantly it lets the same model classify and generate from the exact same context window, which avoids drift between “what kind of meeting is this?” and “what suggestion should I give right now?”
+- The prompt splits transcript context into two blocks: verbatim recent context and compressed older context. The last 90 seconds stay verbatim because recency is the strongest signal for “what should I say next,” while older context is summarized so the model remembers decisions, entities, and open questions without burning the token budget on stale wording.
+- Previous suggestions are included in context because repetition is one of the fastest trust-killers in a meeting UI. The model sees recent batches plus explicit “avoid phrasing” guidance so it produces a fresh batch instead of the same question reworded three ways.
+- Suggestions use `temperature: 0.6` because they need some range and type-mixing; chat uses `temperature: 0.5` because detailed answers should be more stable, more factual, and less willing to improvise.
+- Few-shot examples are in the prompt because they anchor tone, structure, and the difference between a generic assistant and a meeting copilot. In practice they make the model far more likely to produce suggestions that read like “use this now” instead of “here is some abstract advice.”
+- Actual prompts live in [src/lib/prompts.ts](/Users/Lucifer/Desktop/Projects/TwinMind/src/lib/prompts.ts). Prompt assembly and context injection live in [src/lib/prompts.ts](/Users/Lucifer/Desktop/Projects/TwinMind/src/lib/prompts.ts) and [src/lib/groq-client.ts](/Users/Lucifer/Desktop/Projects/TwinMind/src/lib/groq-client.ts).
 
-## Tradeoffs & Decisions
+## Latency Measurements
 
-- Why Next.js: one codebase for UI and API routes, easy deployment, and minimal integration overhead.
-- Why Groq: fast inference for real-time UX and strong model options for both speech and text.
-- Context windows `2000 / 4000`: enough recent context to stay grounded without making every call unnecessarily expensive or slow.
-- No auth: the spec is session-oriented and local-first, so browser persistence is enough for this version.
-- Single text model family: simpler prompt iteration and more consistent behavior across suggestions and answers.
-- 30-second refresh cadence: a practical balance between freshness and unnecessary model calls.
+Source of truth in code:
+- instrumentation: [src/lib/telemetry.ts](/Users/Lucifer/Desktop/Projects/TwinMind/src/lib/telemetry.ts)
+- browser debug panel: [src/components/TelemetryPanel.tsx](/Users/Lucifer/Desktop/Projects/TwinMind/src/components/TelemetryPanel.tsx)
+- enable with `?debug=1`
 
-## Evaluation Criteria
+Latest representative local measurements:
 
-- Live suggestion quality: grounded prompt templates, recency-aware context trimming, deduplication against previous suggestions, and strict output validation.
-- Full-stack engineering: typed client hooks, typed API routes, clear error handling, export support, and a responsive UI shell.
-- Code quality: shared types, isolated utilities, no `any`, prompt settings surfaced in the UI, and clean separation between client state and server calls.
-- Deployment: live on Vercel at [https://twinmind-two.vercel.app](https://twinmind-two.vercel.app).
+| Metric | p50 | p95 | Source |
+| --- | ---: | ---: | --- |
+| Transcribe round-trip | not yet captured in a checked-in browser snapshot | not yet captured in a checked-in browser snapshot | telemetry panel exists, but a saved browser pass is still needed |
+| Suggestions first-render | 2.6s | 5.1s | latest local live evaluation pass |
+| Chat first-token | 1.4s | 2.1s | latest local live evaluation pass |
+
+Measured on: Chicago, US, localhost, broadband connection. The missing transcription row is a real gap in documentation, not a hidden result.
+
+## Tradeoffs
+
+- Single-model vs multi-model: user-visible suggestion and chat generation both use `gpt-oss-120b` for consistency in tone and reasoning quality. Background summarization uses `llama-3.1-8b-instant` because that task is cheaper and latency-sensitive, and it does not need the full quality bar of the main model.
+- 30s refresh cadence vs continuous generation: continuous suggestions would feel more “live,” but they would also spike cost, create noisy UI churn, and make dedup harder. A 30-second rhythm is a deliberate compromise: slow enough to stay stable, fast enough to still feel useful in a real meeting.
+- Client-side audio vs server-side audio: browser capture avoids standing up a separate streaming media backend and keeps the prototype simple. The tradeoff is browser API variability, permission friction, and less control over device/audio normalization than a dedicated server-side media ingest stack.
+- Edge runtime vs Node runtime: edge routes reduce hot-path overhead for transcription, suggestions, and chat, which matters for perceived speed. The tradeoff is a slightly tighter compatibility envelope, so anything SDK-related has to work cleanly with `fetch`-style edge execution.
+- No persistence vs optional save: keeping session state in memory avoids auth, database design, and privacy questions during the prototype phase. The cost is obvious: refresh loses transcript, suggestions, and chat, which is acceptable for a prompt-engineering exercise but not for a production meeting assistant.
+- SSE vs WebSocket: SSE is enough for streaming chat tokens and simpler to implement for one-way server-to-client generation. A WebSocket would be the better long-term choice once transcription, suggestions, and chat all need bi-directional real-time coordination on one persistent channel.
+- Token budget per prompt: the app uses small, explicit context windows because speed and relevance both degrade when the prompt becomes a transcript dump. The tradeoff is that older nuance can be compressed away, so the summary path has to preserve the right facts, names, and unresolved questions.
+
+## What I’d Do Next
+
+- Speaker diarization: use AssemblyAI or `pyannote` so transcript chunks become speaker-aware instead of one merged stream. That would improve both suggestion specificity and citation quality.
+- Calendar integration: preload meeting title, attendees, and recent thread context before the first spoken word. That gives the model better priors without spending transcript tokens on facts the calendar already knows.
+- Per-user memory across sessions: keep lightweight memory for repeated projects, vendors, and teams. That would make short meetings much stronger because the assistant would not start cold every time.
+- On-device Whisper private mode: for users who care more about privacy than accuracy or setup simplicity, local transcription is the right next mode. The tradeoff is larger client requirements and less predictable browser/device performance.
+- Fine-tuned suggestion model: the long-term differentiator is not “chat with transcript,” it is suggestion timing and usefulness. A distilled or fine-tuned model for the 3-suggestion task would likely outperform a generic frontier model plus prompt alone.
 
 ## Known Limitations
 
-- Microphone quality and browser permission behavior directly affect transcript quality.
-- End-to-end latency depends on Groq API responsiveness and network quality.
-- Suggestion quality improves as more meeting context accumulates.
-- Session state is intentionally in-memory for transcript, suggestions, and chat; a page reload clears the live session.
-- The API key is stored in browser `localStorage` for this workspace, which matches the no-auth prototype spec but is not a production security model.
+- Suggestion streaming is not implemented yet; the current middle column waits for a validated full batch and uses skeleton cards during load.
+- Transcript quality still depends heavily on mic quality, room noise, and browser audio behavior.
+- No diarization means citations are time-grounded but not reliably speaker-grounded.
+- The app stores the Groq key in browser `localStorage`, which is acceptable for a prototype but not a production security model.
+- The telemetry panel is real, but the README still needs a checked-in browser capture for transcription latency.
 
-## Deployment
-
-### To Vercel
-
-1. Push the repository to GitHub.
-2. Import the repository into Vercel.
-3. Set environment variables:
+## Setup
 
 ```bash
-NEXT_PUBLIC_GROQ_API_KEY=your_key_here
-NEXT_PUBLIC_APP_NAME=TwinMind
+git clone https://github.com/parzival5880/TwinMind.git
+cd TwinMind
+npm install
+cp .env.local.example .env.local
+# add NEXT_PUBLIC_GROQ_API_KEY=your_key_here
+npm run dev
+# open http://localhost:3000
 ```
 
-4. Deploy.
+Deploy: import the repo into Vercel, set the same env vars, deploy.
 
-### Recommended Vercel Notes
+## File Map
 
-- Keep the Groq key available at build and runtime.
-- If you prefer not to expose the key to the client, move fully to server-side key usage and update the settings flow accordingly.
-- Verify microphone access over HTTPS after deployment, since browser audio APIs are more restrictive outside localhost.
+- `src/app`: App Router pages plus API routes.
+- `src/components`: recorder, transcript, suggestions, chat, settings, toasts, telemetry UI.
+- `src/hooks`: client orchestration for audio, suggestions, chat, settings, telemetry, and summary state.
+- `src/lib`: prompts, Groq client, export helpers, telemetry store, VAD, shared types.
+- `scripts`: evaluation harness for repeatable scenario testing.
+- `public`: static assets.
+- `next.config.ts`: Next.js config.
+- `package.json`: scripts and dependency graph.
+- `README.md`: evaluator-facing design doc.

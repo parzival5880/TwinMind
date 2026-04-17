@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { startTransition, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import type { TranscriptChunk } from "@/lib/types";
 
@@ -11,6 +11,27 @@ type AddTranscriptChunkOptions = {
 
 export function useTranscript() {
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
+
+  const insertChunk = (chunk: TranscriptChunk) => {
+    startTransition(() => {
+      setTranscript((currentTranscript) => {
+        const nextTranscript = currentTranscript.slice();
+        const insertIndex = nextTranscript.findIndex(
+          (currentChunk) => currentChunk.timestamp.getTime() > chunk.timestamp.getTime(),
+        );
+
+        if (insertIndex === -1) {
+          nextTranscript.push(chunk);
+        } else {
+          nextTranscript.splice(insertIndex, 0, chunk);
+        }
+
+        return nextTranscript;
+      });
+    });
+
+    return chunk;
+  };
 
   const addChunk = (text: string, options?: AddTranscriptChunkOptions) => {
     const trimmedText = text.trim();
@@ -26,21 +47,26 @@ export function useTranscript() {
       speaker: options?.speaker,
     };
 
-    setTranscript((currentTranscript) => [
-      ...currentTranscript,
-      chunk,
-    ]);
-
-    return chunk;
+    return insertChunk(chunk);
   };
 
   const clearTranscript = () => {
-    setTranscript([]);
+    startTransition(() => {
+      setTranscript([]);
+    });
+  };
+
+  const replaceTranscript = (nextTranscript: TranscriptChunk[]) => {
+    startTransition(() => {
+      setTranscript(nextTranscript);
+    });
   };
 
   return {
     transcript,
     addChunk,
     clearTranscript,
+    insertChunk,
+    replaceTranscript,
   };
 }
