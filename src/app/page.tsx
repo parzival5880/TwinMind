@@ -10,6 +10,7 @@ import { SuggestionsPanel } from "@/components/SuggestionsPanel";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { useAudio } from "@/hooks/useAudio";
 import { useChat } from "@/hooks/useChat";
+import { useRollingSummary } from "@/hooks/useRollingSummary";
 import { useSettings } from "@/hooks/useSettings";
 import { useSuggestions } from "@/hooks/useSuggestions";
 
@@ -70,13 +71,39 @@ export default function HomePage() {
     detailedAnswerPromptTemplate: settings.detailed_answer_prompt,
     groqApiKey: settings.groq_api_key,
   });
+  const { resetSummary, rollingSummary } = useRollingSummary({
+    enabled: isRecording,
+    groqApiKey: settings.groq_api_key,
+    transcript,
+  });
   const transcriptSignature = useMemo(
     () => transcript.map((chunk) => `${chunk.timestamp.toISOString()}::${chunk.text}`).join("\n"),
     [transcript],
   );
+  const recentChatTopics = useMemo(() => {
+    // Surface the last few user messages as "current chat focus" so the
+    // suggestion model can bias toward topics the user is actively curious
+    // about. Assistant replies are deliberately excluded — they would bias
+    // toward self-reinforcing answers.
+    const recentUserMessages = messages
+      .filter((message) => message.role === "user")
+      .slice(-3)
+      .map((message) => message.content.trim())
+      .filter(Boolean);
+
+    if (recentUserMessages.length === 0) {
+      return "";
+    }
+
+    return recentUserMessages
+      .map((content, index) => `${index + 1}. ${content}`)
+      .join("\n");
+  }, [messages]);
   const lastGeneratedSignatureRef = useRef("");
   const transcriptSignatureRef = useRef(transcriptSignature);
   const isRecordingRef = useRef(isRecording);
+  const rollingSummaryRef = useRef(rollingSummary);
+  const recentChatTopicsRef = useRef(recentChatTopics);
   const sessionState = useMemo(
     () => ({
       transcript,
@@ -95,8 +122,19 @@ export default function HomePage() {
     isRecordingRef.current = isRecording;
   }, [isRecording]);
 
+  useEffect(() => {
+    rollingSummaryRef.current = rollingSummary;
+  }, [rollingSummary]);
+
+  useEffect(() => {
+    recentChatTopicsRef.current = recentChatTopics;
+  }, [recentChatTopics]);
+
   const handleGenerateSuggestions = useCallback(async () => {
-    const batch = await generateSuggestions(transcript);
+    const batch = await generateSuggestions(transcript, {
+      rollingSummary: rollingSummaryRef.current,
+      recentChatTopics: recentChatTopicsRef.current,
+    });
 
     if (batch) {
       lastGeneratedSignatureRef.current = transcriptSignature;
@@ -136,6 +174,12 @@ export default function HomePage() {
   const handleStopRecording = useCallback(() => {
     stopRecording();
   }, [stopRecording]);
+
+  const handleClearTranscript = useCallback(() => {
+    clearTranscript();
+    resetSummary();
+    lastGeneratedSignatureRef.current = "";
+  }, [clearTranscript, resetSummary]);
 
   const mobileTabs = [
     { id: "transcript" as const, label: `Transcript (${transcript.length})` },
@@ -250,7 +294,7 @@ export default function HomePage() {
               onStopRecording={handleStopRecording}
               transcriptionNotice={transcriptionNotice}
             />
-            <TranscriptPanel chunks={transcript} onClear={clearTranscript} />
+            <TranscriptPanel chunks={transcript} onClear={handleClearTranscript} />
           </div>
 
           <div className="min-h-0 md:col-start-2 md:border-l md:border-slate-200 md:pl-6 xl:border-l xl:border-r xl:border-slate-200 xl:px-6">
@@ -290,7 +334,7 @@ export default function HomePage() {
           />
 
           {activeMobileTab === "transcript" ? (
-            <TranscriptPanel chunks={transcript} onClear={clearTranscript} />
+            <TranscriptPanel chunks={transcript} onClear={handleClearTranscript} />
           ) : null}
 
           {activeMobileTab === "suggestions" ? (

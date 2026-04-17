@@ -11,11 +11,13 @@ import type { Suggestion, SuggestionsRequest, SuggestionsResponse } from "@/lib/
 
 const buildResponse = ({
   error,
+  meta,
   suggestions,
   success,
   timestamp,
 }: SuggestionsResponse) => ({
   error,
+  meta,
   suggestions,
   success,
   timestamp,
@@ -32,7 +34,8 @@ const isSuggestion = (value: unknown): value is Suggestion => {
     typeof candidate.id === "string" &&
     typeof candidate.type === "string" &&
     typeof candidate.preview === "string" &&
-    typeof candidate.full_content === "string"
+    typeof candidate.full_content === "string" &&
+    (candidate.trigger === undefined || typeof candidate.trigger === "string")
   );
 };
 
@@ -46,6 +49,13 @@ const isSuggestionsRequest = (value: unknown): value is SuggestionsRequest => {
   return (
     typeof candidate.transcript_chunk === "string" &&
     typeof candidate.full_transcript === "string" &&
+    (candidate.verbatim_recent === undefined || typeof candidate.verbatim_recent === "string") &&
+    (candidate.rolling_summary === undefined || typeof candidate.rolling_summary === "string") &&
+    (candidate.recent_chat_topics === undefined ||
+      typeof candidate.recent_chat_topics === "string") &&
+    (candidate.avoid_phrases === undefined ||
+      (Array.isArray(candidate.avoid_phrases) &&
+        candidate.avoid_phrases.every((phrase) => typeof phrase === "string"))) &&
     (candidate.previous_suggestions === undefined ||
       (Array.isArray(candidate.previous_suggestions) &&
         candidate.previous_suggestions.every(isSuggestion))) &&
@@ -80,12 +90,13 @@ export async function POST(request: Request) {
 
     initializeGroqClient(resolvedApiKey);
 
-    const suggestions = await generateSuggestions(payload);
+    const { suggestions, meta } = await generateSuggestions(payload);
 
     return NextResponse.json(
       buildResponse({
         success: true,
         suggestions,
+        meta,
         timestamp,
       }),
     );

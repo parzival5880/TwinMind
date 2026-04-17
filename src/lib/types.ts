@@ -10,11 +10,18 @@ export type Suggestion = {
   type: "question" | "talking_point" | "answer" | "fact_check" | "clarification";
   preview: string;
   full_content: string;
+  trigger?: string;
+};
+
+export type SuggestionMeta = {
+  meeting_type: string;
+  conversation_stage: string;
 };
 
 export type SuggestionBatch = {
   id: string;
   suggestions: Suggestion[];
+  meta?: SuggestionMeta;
   timestamp: Date;
 };
 
@@ -60,6 +67,10 @@ export type TranscribeResponse = {
 export type SuggestionsRequest = {
   transcript_chunk: string;
   full_transcript: string;
+  verbatim_recent?: string;
+  rolling_summary?: string;
+  recent_chat_topics?: string;
+  avoid_phrases?: string[];
   previous_suggestions?: Suggestion[];
   context_window?: number;
   prompt_template?: string;
@@ -68,6 +79,19 @@ export type SuggestionsRequest = {
 export type SuggestionsResponse = {
   success: boolean;
   suggestions: Suggestion[];
+  meta?: SuggestionMeta;
+  timestamp: string;
+  error?: string;
+};
+
+export type RollingSummaryRequest = {
+  existing_summary: string;
+  new_chunks: Array<{ timestamp: string; text: string; speaker?: string }>;
+};
+
+export type RollingSummaryResponse = {
+  success: boolean;
+  summary: string;
   timestamp: string;
   error?: string;
 };

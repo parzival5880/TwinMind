@@ -8,6 +8,7 @@ import type {
   ChatRequest,
   SerializedChatMessage,
   Suggestion,
+  SuggestionMeta,
   SuggestionsRequest,
 } from "@/lib/types";
 
@@ -213,11 +214,15 @@ const countWords = (value: string) =>
     .split(/\s+/)
     .filter(Boolean).length;
 
-const normalizeSuggestion = (suggestion: Omit<Suggestion, "id">, index: number): Suggestion => ({
+const normalizeSuggestion = (
+  suggestion: Omit<Suggestion, "id">,
+  index: number,
+): Suggestion => ({
   id: `generated-${index + 1}`,
   type: suggestion.type,
   preview: suggestion.preview.trim(),
   full_content: suggestion.full_content.trim(),
+  trigger: suggestion.trigger?.trim() || undefined,
 });
 
 const validateSuggestions = (suggestions: Suggestion[]) => {
@@ -236,11 +241,15 @@ const validateSuggestions = (suggestions: Suggestion[]) => {
     const previewWordCount = countWords(suggestion.preview);
     const fullContentWordCount = countWords(suggestion.full_content);
 
-    if (previewWordCount === 0 || previewWordCount >= 50) {
+    // Preview target is ≤25 words but we allow up to 40 before rejecting to
+    // avoid spurious retries on borderline responses.
+    if (previewWordCount === 0 || previewWordCount > 40) {
       throw new SuggestionGenerationError("Suggestion preview length validation failed.");
     }
 
-    if (fullContentWordCount < 100 || fullContentWordCount > 300) {
+    // Full content target is 120-250 words; accept 90-280 to stay lenient on
+    // edge cases without losing the quality floor.
+    if (fullContentWordCount < 90 || fullContentWordCount > 280) {
       throw new SuggestionGenerationError("Suggestion full content length validation failed.");
     }
 
@@ -257,23 +266,30 @@ const validateSuggestions = (suggestions: Suggestion[]) => {
   if (uniqueTypes.size < 2) {
     throw new SuggestionGenerationError("Suggestion type mix validation failed.");
   }
-
-  if (!suggestions.some((suggestion) => suggestion.type === "question")) {
-    throw new SuggestionGenerationError("At least one question suggestion is required.");
-  }
 };
 
 type SuggestionsSchemaResponse = {
+  meta: SuggestionMeta;
   suggestions: Array<{
     type: Suggestion["type"];
     preview: string;
     full_content: string;
+    trigger: string;
   }>;
 };
 
 const suggestionsResponseSchema = {
   type: "object",
   properties: {
+    meta: {
+      type: "object",
+      properties: {
+        meeting_type: { type: "string" },
+        conversation_stage: { type: "string" },
+      },
+      required: ["meeting_type", "conversation_stage"],
+      additionalProperties: false,
+    },
     suggestions: {
       type: "array",
       minItems: 3,
@@ -285,34 +301,44 @@ const suggestionsResponseSchema = {
             type: "string",
             enum: [...SUGGESTION_TYPES],
           },
-          preview: {
-            type: "string",
-          },
-          full_content: {
-            type: "string",
-          },
+          preview: { type: "string" },
+          full_content: { type: "string" },
+          trigger: { type: "string" },
         },
-        required: ["type", "preview", "full_content"],
+        required: ["type", "preview", "full_content", "trigger"],
         additionalProperties: false,
       },
     },
   },
-  required: ["suggestions"],
+  required: ["meta", "suggestions"],
   additionalProperties: false,
 } as const;
 
+export type GenerateSuggestionsResult = {
+  suggestions: Suggestion[];
+  meta: SuggestionMeta;
+};
+
 export const generateSuggestions = async ({
+  avoid_phrases,
   context_window,
   full_transcript,
   previous_suggestions = [],
   prompt_template,
+  recent_chat_topics,
+  rolling_summary,
   transcript_chunk,
-}: SuggestionsRequest): Promise<Suggestion[]> => {
+  verbatim_recent,
+}: SuggestionsRequest): Promise<GenerateSuggestionsResult> => {
   const client = getGroqClient();
   const contextWindow = Math.max(256, context_window ?? 1800);
-  const { prompt, recentTranscript } = buildSuggestionsPrompt({
+  const { prompt } = buildSuggestionsPrompt({
     contextWindow,
     fullTranscript: full_transcript,
+    verbatimRecent: verbatim_recent,
+    rollingSummary: rolling_summary,
+    recentChatTopics: recent_chat_topics,
+    avoidPhrases: avoid_phrases,
     previousSuggestions: previous_suggestions,
     promptTemplate: prompt_template,
     transcriptChunk: transcript_chunk,
@@ -326,16 +352,11 @@ export const generateSuggestions = async ({
           {
             role: "system",
             content:
-              "You are TwinMind, a real-time meeting copilot. Generate fresh, transcript-grounded meeting suggestions that are immediately useful and do not repeat prior ideas.",
+              "You are TwinMind, a real-time meeting copilot. Generate fresh, transcript-grounded meeting suggestions that are immediately useful and do not repeat prior ideas. Never fabricate facts, vendor details, pricing, or answers to unresolved questions.",
           },
           {
             role: "user",
-            content: `${prompt}
-
-Context window estimate: approximately ${contextWindow} tokens.
-
-Use only this recent transcript window:
-${recentTranscript}`,
+            content: prompt,
           },
         ],
         response_format: {
@@ -346,7 +367,10 @@ ${recentTranscript}`,
             schema: suggestionsResponseSchema,
           },
         },
-        temperature: 0.3,
+        temperature: 0.6,
+        top_p: 0.9,
+        max_tokens: 1500,
+        stop: null,
       },
       {
         timeout: GROQ_SUGGESTIONS_TIMEOUT_MS,
@@ -367,7 +391,12 @@ ${recentTranscript}`,
 
     validateSuggestions(suggestions);
 
-    return suggestions;
+    const meta: SuggestionMeta = {
+      meeting_type: parsedContent.meta?.meeting_type?.trim() || "unspecified",
+      conversation_stage: parsedContent.meta?.conversation_stage?.trim() || "unspecified",
+    };
+
+    return { suggestions, meta };
   } catch (error) {
     if (
       error instanceof APIKeyError ||
@@ -435,7 +464,7 @@ export const generateDetailedAnswer = async ({
           {
             role: "system",
             content:
-              "You are TwinMind, a real-time meeting copilot. Answer clearly, stay grounded in the transcript, maintain continuity with prior chat messages, and be helpful without fabricating details.",
+              "You are TwinMind, a real-time meeting copilot. Answer clearly, stay grounded in the transcript, maintain continuity with prior chat messages, and be helpful without fabricating details. If the transcript raises a question or unknown, keep it unresolved unless the transcript explicitly answers it.",
           },
           {
             role: "user",
