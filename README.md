@@ -2,7 +2,7 @@
 
 TwinMind is a real-time meeting copilot that captures microphone audio, transcribes it in short chunks, generates three context-aware suggestions every 30 seconds, and lets users expand those suggestions into detailed chat answers. The project is built as a single Next.js codebase with typed API routes, client hooks, and a responsive multi-panel UI.
 
-**Deployed URL:** `[fill in when ready]`
+**Deployed URL:** [https://twinmind-two.vercel.app](https://twinmind-two.vercel.app)
 
 ## Features
 
@@ -148,7 +148,7 @@ More concretely:
 - Live suggestion quality: grounded prompt templates, recency-aware context trimming, deduplication against previous suggestions, and strict output validation.
 - Full-stack engineering: typed client hooks, typed API routes, clear error handling, export support, and a responsive UI shell.
 - Code quality: shared types, isolated utilities, no `any`, prompt settings surfaced in the UI, and clean separation between client state and server calls.
-- Deployment: ready for Vercel deployment. Deployed URL: `[fill in when ready]`.
+- Deployment: live on Vercel at [https://twinmind-two.vercel.app](https://twinmind-two.vercel.app).
 
 ## Known Limitations
 
