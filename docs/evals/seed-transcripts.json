@@ -1,0 +1,298 @@
+{
+  "version": 1,
+  "description": "Seed transcripts for live-suggestion eval. Each fixture is a 60-90s meeting slice with plantable signals the suggestions pipeline is expected to surface. Use alongside docs/evals/rubric.md to grade output.",
+  "signal_legend": {
+    "claims": "Verifiable statements (number, date, capability, commitment made as fact). Rubric expects fact_check candidates.",
+    "questions_asked": "Explicit questions in-transcript that went unanswered. Rubric expects answer-type suggestions.",
+    "commitments": "Dates, owners, deliverables named as decided. Rubric expects probes that test hidden assumptions.",
+    "ambiguous": "Phrases with multiple meanings or undefined scope. Rubric expects clarification-type suggestions.",
+    "objections": "Signals of doubt, resistance, or competing priorities. Rubric expects objection-handling talking_points.",
+    "unresolved_threads": "Named topics raised and dropped without closure. Rubric expects forward-looking questions."
+  },
+  "fixtures": [
+    {
+      "id": "sc-01",
+      "meeting_type": "sales_call",
+      "expected_stage": "discovery",
+      "description": "Mid-funnel SaaS discovery. Prospect is researching but evasive on budget and authority.",
+      "expected_signals": {
+        "claims": ["team of 40 engineers", "current tool costs 90k a year"],
+        "questions_asked": ["What does the rollout timeline look like on your side?"],
+        "commitments": [],
+        "ambiguous": ["we're exploring options", "sometime this quarter"],
+        "objections": [],
+        "unresolved_threads": ["who signs off on the purchase", "actual budget ceiling"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "AE", "text": "Appreciate you taking the call. Before we dive into the platform, it would help to understand what prompted you to look at alternatives now." },
+        { "tMs": 9000, "speaker": "Prospect", "text": "Yeah, we're exploring options. We have a team of 40 engineers and the current tool is getting expensive. We pay about 90k a year for it and the ROI isn't obvious anymore." },
+        { "tMs": 22000, "speaker": "AE", "text": "Got it. When you say the ROI isn't obvious, is that a utilization question or an outcome question?" },
+        { "tMs": 32000, "speaker": "Prospect", "text": "Bit of both. Half the team doesn't log in regularly. And we haven't tied it to any shipping metric." },
+        { "tMs": 44000, "speaker": "AE", "text": "That tracks with what we see. What does the rollout timeline look like on your side if you did decide to switch?" },
+        { "tMs": 56000, "speaker": "Prospect", "text": "Sometime this quarter probably. I'd need to align with Priya on engineering leadership and obviously finance would have to look at the numbers." },
+        { "tMs": 71000, "speaker": "AE", "text": "Makes sense. Is Priya the person who would ultimately say yes or no?" },
+        { "tMs": 79000, "speaker": "Prospect", "text": "She has a lot of say. I pull the trigger on things under 100k but anything above she and Marcus in finance have to bless it together." }
+      ]
+    },
+    {
+      "id": "sc-02",
+      "meeting_type": "sales_call",
+      "expected_stage": "debate",
+      "description": "Late-stage negotiation. Champion raises a security objection and a pricing objection in the same turn.",
+      "expected_signals": {
+        "claims": ["their tool is SOC 2 Type 2", "contract would be 140k for year one"],
+        "questions_asked": ["Can you do 120 flat for year one if we commit to two years?"],
+        "commitments": [],
+        "ambiguous": ["security team is nervous"],
+        "objections": ["security team nervous about data residency", "pricing is higher than budgeted"],
+        "unresolved_threads": ["what specifically in data residency is blocking", "two-year commitment vs discount"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Champion", "text": "Okay, look, I want to make this work but I have two problems. First, my security team is nervous about data residency and second, the pricing is higher than I budgeted for." },
+        { "tMs": 14000, "speaker": "AE", "text": "Let's take them one at a time. On security, what specifically has them concerned? We're SOC 2 Type 2 and the data stays in the region you pick." },
+        { "tMs": 26000, "speaker": "Champion", "text": "I know you're SOC 2, their tool is also SOC 2 Type 2. The issue they raised was about where the vector embeddings get processed. Apparently some vendors ship them back to a different region for training." },
+        { "tMs": 42000, "speaker": "AE", "text": "Understood. We don't train on customer data at all, and embeddings stay in your region. I can send the architecture doc that your team can review." },
+        { "tMs": 54000, "speaker": "Champion", "text": "That would help. On the pricing, the contract you sent is 140k for year one. Can you do 120 flat for year one if we commit to two years?" },
+        { "tMs": 68000, "speaker": "AE", "text": "I can take that to my VP. If I get you to 120, what does the signing timeline look like?" },
+        { "tMs": 78000, "speaker": "Champion", "text": "If the architecture doc checks out with security, I can get procurement moving next week." }
+      ]
+    },
+    {
+      "id": "int-01",
+      "meeting_type": "interview",
+      "expected_stage": "discovery",
+      "description": "Senior engineer interview. Candidate gives a vague accomplishment that hides scope and personal contribution.",
+      "expected_signals": {
+        "claims": ["we cut latency by 60 percent", "I led the migration"],
+        "questions_asked": [],
+        "commitments": [],
+        "ambiguous": ["stabilized the platform", "I led the migration", "we made it faster"],
+        "objections": [],
+        "unresolved_threads": ["what specifically broke before the migration", "how the candidate personally contributed vs delegated"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Interviewer", "text": "Tell me about a technical project you're proud of in the last two years." },
+        { "tMs": 7000, "speaker": "Candidate", "text": "Sure. The biggest one was the checkout platform migration. It was slow and had reliability issues. I led the migration to a new service architecture and we cut latency by 60 percent." },
+        { "tMs": 22000, "speaker": "Interviewer", "text": "When you say you led it, what did that mean in practice?" },
+        { "tMs": 30000, "speaker": "Candidate", "text": "I wrote the design doc, got buy-in from the platform team, and made sure we shipped on time. A team of four engineers worked under me." },
+        { "tMs": 44000, "speaker": "Interviewer", "text": "What was actually breaking before the migration?" },
+        { "tMs": 51000, "speaker": "Candidate", "text": "A lot of things. Database contention, slow external calls, that kind of thing. We made it faster and more reliable." },
+        { "tMs": 65000, "speaker": "Interviewer", "text": "Which of those did you personally dig into first?" },
+        { "tMs": 73000, "speaker": "Candidate", "text": "I stabilized the platform mostly by moving payments off the monolith. That was the biggest win. Then we handled the other bottlenecks." }
+      ]
+    },
+    {
+      "id": "int-02",
+      "meeting_type": "interview",
+      "expected_stage": "debate",
+      "description": "Candidate defends a tradeoff decision under pressure. Strong signal for probe-into-rejected-alternative.",
+      "expected_signals": {
+        "claims": ["Postgres would not scale to our write volume", "we picked Cassandra"],
+        "questions_asked": ["Did you benchmark Postgres with partitioning before ruling it out?"],
+        "commitments": [],
+        "ambiguous": ["would not scale"],
+        "objections": ["interviewer pushes back on the conclusion"],
+        "unresolved_threads": ["what numbers defined 'would not scale'", "what got rejected"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Interviewer", "text": "Talk me through the datastore decision for the event pipeline." },
+        { "tMs": 6000, "speaker": "Candidate", "text": "We looked at Postgres first because we already ran it. But Postgres would not scale to our write volume. So we picked Cassandra." },
+        { "tMs": 18000, "speaker": "Interviewer", "text": "When you say it wouldn't scale, what number did you have in mind?" },
+        { "tMs": 26000, "speaker": "Candidate", "text": "We were projecting around 80 thousand writes per second at peak. That's a lot for a single Postgres instance." },
+        { "tMs": 38000, "speaker": "Interviewer", "text": "Did you benchmark Postgres with partitioning before ruling it out?" },
+        { "tMs": 46000, "speaker": "Candidate", "text": "We did a light test with pg_partman. It got to maybe 40k before latency ballooned. We didn't do a full capacity test with tuned hardware, admittedly." },
+        { "tMs": 62000, "speaker": "Interviewer", "text": "So what did Cassandra buy you that was decisive?" },
+        { "tMs": 69000, "speaker": "Candidate", "text": "Horizontal scaling without the partitioning operational overhead. But the tradeoff was losing joins and having weaker consistency guarantees." }
+      ]
+    },
+    {
+      "id": "tr-01",
+      "meeting_type": "technical_review",
+      "expected_stage": "debate",
+      "description": "Architecture review. Proposal claims a specific throughput that should be stress-tested before accepting.",
+      "expected_signals": {
+        "claims": ["Kafka handles 200k messages per second on three brokers", "fanout to websockets adds 15ms p99"],
+        "questions_asked": ["What happens when a broker fails mid-publish?"],
+        "commitments": [],
+        "ambiguous": ["should be fine", "we can always add more brokers"],
+        "objections": [],
+        "unresolved_threads": ["replication factor and consumer lag under failure", "p99 claim under packet loss"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Presenter", "text": "For the notifications pipeline we're proposing Kafka with three brokers. Kafka handles 200k messages per second on three brokers based on the load tests we ran last sprint." },
+        { "tMs": 14000, "speaker": "Reviewer", "text": "What was the message size in those load tests?" },
+        { "tMs": 22000, "speaker": "Presenter", "text": "About 1 kilobyte. Similar to the real payload shape." },
+        { "tMs": 30000, "speaker": "Reviewer", "text": "What happens when a broker fails mid-publish? Did you measure consumer lag during that scenario?" },
+        { "tMs": 41000, "speaker": "Presenter", "text": "We didn't do an explicit failure test. But with replication factor 3 it should be fine. We can always add more brokers if needed." },
+        { "tMs": 55000, "speaker": "Reviewer", "text": "And then the fanout — you said the end-to-end adds 15ms p99 to websocket clients." },
+        { "tMs": 66000, "speaker": "Presenter", "text": "Yes, 15ms p99 fanout. That's with the current connection count of about 80 thousand open sockets." },
+        { "tMs": 78000, "speaker": "Reviewer", "text": "Measured in what network conditions? And was that sustained or a burst average?" }
+      ]
+    },
+    {
+      "id": "tr-02",
+      "meeting_type": "technical_review",
+      "expected_stage": "converging",
+      "description": "Incident postmortem. Team is converging on a root cause that may be incomplete.",
+      "expected_signals": {
+        "claims": ["the outage was caused by the config push", "rollback completed in four minutes"],
+        "questions_asked": [],
+        "commitments": ["we'll add a config schema validator"],
+        "ambiguous": ["something was off with the rollback"],
+        "objections": [],
+        "unresolved_threads": ["why the canary didn't catch it", "whether the fix addresses the class of issue"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Lead", "text": "Okay so to summarize, the outage was caused by the config push at 14:02. The rollback completed in four minutes and traffic recovered by 14:08." },
+        { "tMs": 14000, "speaker": "SRE", "text": "Yeah. We'll add a config schema validator in the deploy pipeline. That would have caught this one." },
+        { "tMs": 26000, "speaker": "Engineer", "text": "Something was off with the rollback though. It took longer than our drill numbers suggested. I think it was four minutes to recovery but only because we manually intervened." },
+        { "tMs": 40000, "speaker": "Lead", "text": "Good flag. Can you add that to the follow-ups? Let's make sure the automated rollback path actually works under the same load pattern." },
+        { "tMs": 54000, "speaker": "SRE", "text": "And the canary didn't catch it either. It was a 5 percent canary but the failure mode only showed up at full fanout." },
+        { "tMs": 66000, "speaker": "Lead", "text": "Right. I want the action items to be the schema validator, the canary fanout review, and a rollback drill. Who owns which?" },
+        { "tMs": 80000, "speaker": "SRE", "text": "I'll take the schema validator. Drill ownership should probably sit with the on-call rotation." }
+      ]
+    },
+    {
+      "id": "sup-01",
+      "meeting_type": "standup",
+      "expected_stage": "discovery",
+      "description": "Daily standup. One engineer buries a blocker inside a status update.",
+      "expected_signals": {
+        "claims": ["I should be done by Thursday"],
+        "questions_asked": [],
+        "commitments": ["Thursday delivery"],
+        "ambiguous": ["working through some stuff", "waiting on backend"],
+        "objections": [],
+        "unresolved_threads": ["what specifically is blocking QA", "who owns the backend fix"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "PM", "text": "Quick round. Jamie, what's your status?" },
+        { "tMs": 5000, "speaker": "Jamie", "text": "I'm on the search filters ticket. Making progress, working through some stuff with the highlight logic. I should be done by Thursday." },
+        { "tMs": 18000, "speaker": "PM", "text": "Cool. Priya?" },
+        { "tMs": 22000, "speaker": "Priya", "text": "Finished the instrumentation work yesterday. Today I'm picking up the vendor integration. No blockers." },
+        { "tMs": 34000, "speaker": "PM", "text": "Great. Sam?" },
+        { "tMs": 37000, "speaker": "Sam", "text": "QA side of the payments redesign. We're kind of stuck, honestly. Waiting on backend to return the right error codes. Been waiting since Monday." },
+        { "tMs": 54000, "speaker": "PM", "text": "Which endpoint specifically?" },
+        { "tMs": 60000, "speaker": "Sam", "text": "The refund flow. When the backend returns a 500 we can't tell if it's a retryable timeout or a real failure. We asked backend on Monday but nothing yet." },
+        { "tMs": 76000, "speaker": "PM", "text": "Okay. Anything else to flag?" }
+      ]
+    },
+    {
+      "id": "br-01",
+      "meeting_type": "brainstorm",
+      "expected_stage": "discovery",
+      "description": "Product brainstorm. Team is generating ideas with fuzzy user definitions.",
+      "expected_signals": {
+        "claims": ["new managers don't know who to ask"],
+        "questions_asked": ["What if the onboarding assistant surfaced it automatically?"],
+        "commitments": [],
+        "ambiguous": ["new managers", "power users", "stuff they care about"],
+        "objections": [],
+        "unresolved_threads": ["who the actual buyer is vs the user", "what 'stuff they care about' means"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Designer", "text": "Okay, the brief is onboarding for first-time managers. What are we actually solving?" },
+        { "tMs": 8000, "speaker": "PM", "text": "New managers don't know who to ask when they hit something unfamiliar. They're guessing. We want to reduce that." },
+        { "tMs": 20000, "speaker": "Designer", "text": "What if the onboarding assistant surfaced it automatically when someone opened a screen they hadn't seen before?" },
+        { "tMs": 32000, "speaker": "PM", "text": "I like that direction. And we could personalize it based on what matters to them, like stuff they care about in their week one." },
+        { "tMs": 46000, "speaker": "Engineer", "text": "Are we building this for new managers or for power users? Because a power user would hate a prompt every time they open a new screen." },
+        { "tMs": 60000, "speaker": "PM", "text": "Just new managers for now. Week one and two specifically." },
+        { "tMs": 70000, "speaker": "Designer", "text": "Who's the buyer though? If HR is pushing this, the design will be different than if the manager themselves requests it." }
+      ]
+    },
+    {
+      "id": "pl-01",
+      "meeting_type": "planning",
+      "expected_stage": "converging",
+      "description": "Release planning. Team is committing to a June 15 launch with a hidden upstream dependency.",
+      "expected_signals": {
+        "claims": ["design freeze is May 1", "QA needs two weeks"],
+        "questions_asked": [],
+        "commitments": ["June 15 launch", "design freeze May 1"],
+        "ambiguous": ["a couple of risks"],
+        "objections": [],
+        "unresolved_threads": ["what happens if vendor API slips", "what slips first if design misses freeze"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "TPM", "text": "Okay let's lock the June 15 launch. Design freeze is May 1, engineering feature-complete May 22, QA needs two weeks so we're cut by June 5." },
+        { "tMs": 16000, "speaker": "Design Lead", "text": "May 1 is tight for the dashboard revamp. Can we carve out the reports page as phase 2?" },
+        { "tMs": 28000, "speaker": "TPM", "text": "If we carve reports out, does phase 1 still land on June 15?" },
+        { "tMs": 36000, "speaker": "Design Lead", "text": "Yes, without reports we can hit May 1." },
+        { "tMs": 44000, "speaker": "Eng Lead", "text": "I have a couple of risks to flag. The vendor API we depend on for the auth piece hasn't confirmed their May 20 readiness date. If they slip, we slip." },
+        { "tMs": 60000, "speaker": "TPM", "text": "Did we get that in writing?" },
+        { "tMs": 66000, "speaker": "Eng Lead", "text": "Verbal only. Their account rep said early May but didn't commit to a specific date." },
+        { "tMs": 76000, "speaker": "TPM", "text": "Okay. We're committing to June 15 for phase 1. I want the vendor date confirmed in writing by Friday." }
+      ]
+    },
+    {
+      "id": "oo-01",
+      "meeting_type": "one_on_one",
+      "expected_stage": "discovery",
+      "description": "Manager-report 1:1. Report is indirectly raising a scope-and-burnout concern.",
+      "expected_signals": {
+        "claims": [],
+        "questions_asked": [],
+        "commitments": [],
+        "ambiguous": ["it's a lot", "I'm managing", "the new stuff is different"],
+        "objections": [],
+        "unresolved_threads": ["which part of the new scope is unsustainable", "whether the career path conversation is still pending"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Manager", "text": "How's the new scope going? Last time we talked it was pretty fresh." },
+        { "tMs": 8000, "speaker": "Report", "text": "It's going. I mean, it's a lot. But I'm managing." },
+        { "tMs": 18000, "speaker": "Manager", "text": "What does 'a lot' look like day to day?" },
+        { "tMs": 24000, "speaker": "Report", "text": "The infra work I was already doing, plus now the on-call rotation, plus the mentorship for the two new hires. The new stuff is different from what I was good at." },
+        { "tMs": 40000, "speaker": "Manager", "text": "Which piece feels hardest?" },
+        { "tMs": 46000, "speaker": "Report", "text": "Honestly the mentorship. I don't feel like I'm doing it well. The infra stuff I can execute in my sleep." },
+        { "tMs": 60000, "speaker": "Manager", "text": "What would good mentorship look like if you defined it?" },
+        { "tMs": 68000, "speaker": "Report", "text": "I don't know. I haven't had time to figure that out. Also, we were supposed to circle back on the staff eng track thing. That kind of fell off." }
+      ]
+    },
+    {
+      "id": "df-01",
+      "meeting_type": "default",
+      "expected_stage": "opening",
+      "description": "Meeting just started. Context is thin but a specific promise has already been made.",
+      "expected_signals": {
+        "claims": ["we shipped the new onboarding last Thursday"],
+        "questions_asked": [],
+        "commitments": ["Marco will prepare the dashboard by next Friday"],
+        "ambiguous": ["the numbers are looking interesting"],
+        "objections": [],
+        "unresolved_threads": ["what 'interesting' means", "whether dashboard scope is defined"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "Host", "text": "Thanks everyone for joining. The purpose of this meeting is to align on the next two weeks." },
+        { "tMs": 10000, "speaker": "Host", "text": "Quick update from me: we shipped the new onboarding last Thursday. The numbers are looking interesting, not definitive yet." },
+        { "tMs": 26000, "speaker": "Marco", "text": "I can put together a proper dashboard on the onboarding funnel. I'll have it by next Friday." },
+        { "tMs": 40000, "speaker": "Host", "text": "Perfect. We'll use it to decide whether to roll forward or adjust." },
+        { "tMs": 52000, "speaker": "Amira", "text": "Should we get any input from support on early signals? They were flagging some confusion last week." },
+        { "tMs": 66000, "speaker": "Host", "text": "Yes. Let's add that to Marco's dashboard if we can pull tagged support tickets." },
+        { "tMs": 78000, "speaker": "Marco", "text": "Sure. I'll sync with support Thursday." }
+      ]
+    },
+    {
+      "id": "df-02",
+      "meeting_type": "default",
+      "expected_stage": "debate",
+      "description": "Unstructured discussion with mixed signals. Designed to be genuinely ambiguous to classify.",
+      "expected_signals": {
+        "claims": ["the support tickets dropped 30% after the redesign", "we'd need another two engineers"],
+        "questions_asked": ["Are we sure the 30% is real and not seasonal?"],
+        "commitments": [],
+        "ambiguous": ["do more of this", "the team is stretched"],
+        "objections": ["headcount resistance"],
+        "unresolved_threads": ["what 'more of this' means concretely", "seasonality of the 30% claim"]
+      },
+      "transcript": [
+        { "tMs": 0, "speaker": "A", "text": "Here's what I'm seeing. Since the redesign shipped, the support tickets dropped 30%. I think we should do more of this." },
+        { "tMs": 14000, "speaker": "B", "text": "Are we sure the 30% is real and not seasonal? Last year we also saw a drop around the same time." },
+        { "tMs": 26000, "speaker": "A", "text": "Fair, I haven't controlled for that. But the qualitative signal is consistent. People are finding their way around faster." },
+        { "tMs": 40000, "speaker": "C", "text": "I'm supportive in principle. The team is stretched though. If we want to do more, we'd need another two engineers at least." },
+        { "tMs": 54000, "speaker": "B", "text": "Two engineers is a big ask in this environment. Is there a way to do this with the existing team by deprioritizing something?" },
+        { "tMs": 68000, "speaker": "A", "text": "We could pause the vendor integration work for a quarter. That was lower priority anyway." },
+        { "tMs": 80000, "speaker": "C", "text": "That's a real tradeoff. Let's not decide it in this room without the vendor integration stakeholder present." }
+      ]
+    }
+  ]
+}

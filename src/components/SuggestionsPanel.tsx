@@ -2,21 +2,23 @@
 
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { format } from "date-fns";
-import type { Suggestion, SuggestionBatch } from "@/lib/types";
+import type { Suggestion, SuggestionBatch, SuggestionMeta } from "@/lib/types";
 
 type SuggestionsPanelProps = {
   error: string | null;
   isLoading: boolean;
+  isRefreshingTranscript?: boolean;
   onCopySuggestion?: (suggestion: Suggestion) => void;
   onDismissSuggestion?: (suggestion: Suggestion) => void;
   onOpenSettings?: () => void;
   onRefresh: () => void;
-  onSuggestionSelected?: (suggestion: Suggestion) => void;
+  onSuggestionSelected?: (suggestion: Suggestion, meta?: SuggestionMeta) => void;
   suggestionBatches: SuggestionBatch[];
 };
 
 type SuggestionContextMenuState = {
   suggestion: Suggestion;
+  meta?: SuggestionMeta;
   x: number;
   y: number;
 };
@@ -95,6 +97,19 @@ const SuggestionCard = memo(function SuggestionCard({
       {expanded ? (
         <div className="mt-3 border-t border-slate-200 pt-3">
           <p className="text-sm leading-7 text-slate-600">{suggestion.full_content}</p>
+          {suggestion.evidence_quote ? (
+            <div className="mt-3 rounded-[1rem] bg-slate-50 px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                Evidence quote
+              </p>
+              <p className="mt-1 text-sm font-medium leading-6 text-slate-700">
+                &quot;{suggestion.evidence_quote}&quot;
+              </p>
+              {suggestion.why_relevant ? (
+                <p className="mt-1 text-xs leading-5 text-slate-500">{suggestion.why_relevant}</p>
+              ) : null}
+            </div>
+          ) : null}
           <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-teal-700">
             Sent to chat for a detailed answer
           </p>
@@ -107,6 +122,7 @@ const SuggestionCard = memo(function SuggestionCard({
 export function SuggestionsPanel({
   error,
   isLoading,
+  isRefreshingTranscript,
   onCopySuggestion,
   onDismissSuggestion,
   onOpenSettings,
@@ -147,19 +163,20 @@ export function SuggestionsPanel({
     };
   }, []);
 
-  const handleSuggestionClick = (suggestion: Suggestion) => {
+  const handleSuggestionClick = (suggestion: Suggestion, meta?: SuggestionMeta) => {
     const nextExpandedId = expandedSuggestionId === suggestion.id ? null : suggestion.id;
 
     setExpandedSuggestionId(nextExpandedId);
 
     if (nextExpandedId) {
-      onSuggestionSelected?.(suggestion);
+      onSuggestionSelected?.(suggestion, meta);
     }
   };
 
-  const openContextMenu = (suggestion: Suggestion, x: number, y: number) => {
+  const openContextMenu = (suggestion: Suggestion, x: number, y: number, meta?: SuggestionMeta) => {
     setContextMenu({
       suggestion,
+      meta,
       x,
       y,
     });
@@ -202,10 +219,13 @@ export function SuggestionsPanel({
           <span className="rounded-full bg-teal-700 px-3 py-1 text-xs font-semibold text-white shadow-sm">
             {visibleBatches.length} batches
           </span>
+          {isRefreshingTranscript ? (
+            <span className="text-xs font-medium text-slate-400">Updating transcript…</span>
+          ) : null}
           <button
             aria-label="Refresh suggestions"
             className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white/90 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:-translate-y-0.5 hover:border-slate-950 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={isLoading}
+            disabled={isLoading || isRefreshingTranscript}
             type="button"
             onClick={onRefresh}
           >
@@ -291,14 +311,19 @@ export function SuggestionsPanel({
                   expanded={expandedSuggestionId === suggestion.id}
                   onContextMenu={(event, selectedSuggestion) => {
                     event.preventDefault();
-                    openContextMenu(selectedSuggestion, event.clientX, event.clientY);
+                    openContextMenu(selectedSuggestion, event.clientX, event.clientY, batch.meta);
                   }}
                   onLongPress={(selectedSuggestion, target) => {
                     const rect = target.getBoundingClientRect();
-                    openContextMenu(selectedSuggestion, rect.left + rect.width / 2, rect.top + 24);
+                    openContextMenu(
+                      selectedSuggestion,
+                      rect.left + rect.width / 2,
+                      rect.top + 24,
+                      batch.meta,
+                    );
                   }}
                   suggestion={suggestion}
-                  onClick={() => handleSuggestionClick(suggestion)}
+                  onClick={() => handleSuggestionClick(suggestion, batch.meta)}
                 />
               ))}
             </div>
@@ -333,7 +358,7 @@ export function SuggestionsPanel({
             type="button"
             onClick={() => {
               setExpandedSuggestionId(contextMenu.suggestion.id);
-              onSuggestionSelected?.(contextMenu.suggestion);
+              onSuggestionSelected?.(contextMenu.suggestion, contextMenu.meta);
               setContextMenu(null);
             }}
           >

@@ -11,12 +11,22 @@ export type Suggestion = {
   preview: string;
   full_content: string;
   evidence_quote: string;
+  why_relevant: string;
   trigger?: string;
 };
 
 export type SuggestionMeta = {
   meeting_type: string;
   conversation_stage: string;
+  grounding_audit?: Array<{ id: string; grounded: boolean; score: number }>;
+};
+
+export type ContextBundle = {
+  rollingSummary: RollingSummary | null;
+  verbatimRecent: string;
+  salientMemory: SalientMoment[];
+  meta?: SuggestionMeta;
+  recentChatTopics: string[];
 };
 
 export type SuggestionBatch = {
@@ -24,6 +34,47 @@ export type SuggestionBatch = {
   suggestions: Suggestion[];
   meta?: SuggestionMeta;
   timestamp: Date;
+};
+
+export type SalientCategory =
+  | "claim"
+  | "question"
+  | "decision"
+  | "commitment"
+  | "objection"
+  | "key_entity";
+
+export type SalientStatus = "open" | "addressed";
+
+export type SalientMoment = {
+  id: string;
+  timestamp: number;
+  category: SalientCategory;
+  summary: string;
+  verbatim: string;
+  importance: 1 | 2 | 3 | 4 | 5;
+  status: SalientStatus;
+  addressed_at?: number;
+};
+
+export type SalienceExtractionRequest = {
+  transcript_slice: string;
+  open_moments: Array<Pick<SalientMoment, "id" | "category" | "summary" | "verbatim">>;
+};
+
+export type SalienceExtractionRaw = {
+  new_moments: Array<{
+    category: SalientCategory;
+    summary: string;
+    verbatim: string;
+    importance: number;
+  }>;
+  resolved_ids: string[];
+};
+
+export type SalienceExtractionResponse = {
+  new_moments: Array<Omit<SalientMoment, "id" | "timestamp" | "status" | "addressed_at">>;
+  resolved_ids: string[];
 };
 
 export type ChatMessage = {
@@ -35,6 +86,8 @@ export type ChatMessage = {
   isStreaming?: boolean;
   requestMessage?: string;
   requestPromptTemplate?: string;
+  requestSuggestion?: Suggestion;
+  requestMeta?: SuggestionMeta;
   streamError?: boolean;
 };
 
@@ -76,11 +129,14 @@ export type SuggestionsRequest = {
   transcript_chunk: string;
   full_transcript: string;
   verbatim_recent?: string;
-  rolling_summary?: string;
+  rolling_summary?: string | RollingSummary | null;
   recent_chat_topics?: string;
   avoid_phrases?: string[];
   context_window?: number;
   prompt_template?: string;
+  meeting_type?: string;
+  conversation_stage?: string;
+  salient_memory?: SalientMoment[];
 };
 
 export type SuggestionsResponse = {
@@ -91,24 +147,27 @@ export type SuggestionsResponse = {
   error?: string;
 };
 
+export type RollingSummary = {
+  topic: string;
+  stance: string;
+  phase: "exploring" | "converging" | "deciding" | "wrapping" | "unclear";
+  tone: "analytical" | "tense" | "aligned" | "stalled" | "exploratory" | "neutral";
+  participants_heard: string[];
+};
+
 export type RollingSummaryRequest = {
-  existing_summary: string;
-  new_chunks: Array<{ timestamp: string; text: string; speaker?: string }>;
+  full_transcript: string;
 };
 
 export type RollingSummaryResponse = {
-  success: boolean;
-  summary: string;
-  timestamp: string;
-  error?: string;
+  summary: RollingSummary | null;
 };
 
 export type ChatRequest = {
-  user_message: string;
-  full_transcript: string;
-  chat_history: SerializedChatMessage[];
-  context_window?: number;
-  prompt_template?: string;
+  message: string;
+  history: ChatMessage[];
+  suggestion?: Suggestion;
+  context: ContextBundle;
 };
 
 export type ChatResponse = {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RollingSummaryResponse, TranscriptChunk } from "@/lib/types";
+import type { RollingSummary, RollingSummaryResponse, TranscriptChunk } from "@/lib/types";
 
 type UseRollingSummaryOptions = {
   enabled: boolean;
@@ -10,7 +10,7 @@ type UseRollingSummaryOptions = {
 };
 
 type UseRollingSummaryResult = {
-  rollingSummary: string;
+  rollingSummary: RollingSummary | null;
   resetSummary: () => void;
 };
 
@@ -28,31 +28,28 @@ const SUMMARY_UPDATE_INTERVAL_MS = 180_000;
 // is essentially nothing new to compress.
 const MIN_ROLLOUT_CHUNKS = 3;
 
-const toSummaryChunk = (chunk: TranscriptChunk) => ({
-  timestamp: chunk.timestamp.toISOString(),
-  text: chunk.text,
-  speaker: chunk.speaker,
-});
+const buildTranscriptText = (chunks: TranscriptChunk[]) =>
+  chunks
+    .map((chunk) => {
+      const speakerLabel = chunk.speaker ? `${chunk.speaker}: ` : "";
+      return `[${chunk.timestamp.toISOString()}] ${speakerLabel}${chunk.text}`;
+    })
+    .join("\n");
 
 export function useRollingSummary({
   enabled,
   groqApiKey,
   transcript,
 }: UseRollingSummaryOptions): UseRollingSummaryResult {
-  const [rollingSummary, setRollingSummary] = useState("");
+  const [rollingSummary, setRollingSummary] = useState<RollingSummary | null>(null);
   const summaryWatermarkRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
   const transcriptRef = useRef(transcript);
-  const rollingSummaryRef = useRef(rollingSummary);
   const groqApiKeyRef = useRef(groqApiKey);
 
   useEffect(() => {
     transcriptRef.current = transcript;
   }, [transcript]);
-
-  useEffect(() => {
-    rollingSummaryRef.current = rollingSummary;
-  }, [rollingSummary]);
 
   useEffect(() => {
     groqApiKeyRef.current = groqApiKey;
@@ -99,14 +96,13 @@ export function useRollingSummary({
           "x-groq-api-key": apiKey,
         },
         body: JSON.stringify({
-          existing_summary: rollingSummaryRef.current,
-          new_chunks: rolloutChunks.map(toSummaryChunk),
+          full_transcript: buildTranscriptText(currentTranscript),
         }),
       });
 
       const payload = (await response.json()) as RollingSummaryResponse;
 
-      if (!response.ok || !payload.success) {
+      if (!response.ok || payload.summary === null) {
         return;
       }
 
@@ -142,7 +138,7 @@ export function useRollingSummary({
   }, [enabled, updateSummary]);
 
   const resetSummary = useCallback(() => {
-    setRollingSummary("");
+    setRollingSummary(null);
     summaryWatermarkRef.current = null;
   }, []);
 

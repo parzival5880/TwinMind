@@ -11,6 +11,7 @@ type AddTranscriptChunkOptions = {
 
 export function useTranscript() {
   const [transcript, setTranscript] = useState<TranscriptChunk[]>([]);
+  const [committedTranscript, setCommittedTranscript] = useState<TranscriptChunk[]>([]);
 
   const insertChunk = (chunk: TranscriptChunk) => {
     startTransition(() => {
@@ -53,6 +54,7 @@ export function useTranscript() {
   const clearTranscript = () => {
     startTransition(() => {
       setTranscript([]);
+      setCommittedTranscript([]);
     });
   };
 
@@ -62,11 +64,19 @@ export function useTranscript() {
     });
   };
 
+  const replaceCommittedTranscript = (nextTranscript: TranscriptChunk[]) => {
+    startTransition(() => {
+      setCommittedTranscript(nextTranscript);
+    });
+  };
+
   return {
     transcript,
+    committedTranscript,
     addChunk,
     clearTranscript,
     insertChunk,
+    replaceCommittedTranscript,
     replaceTranscript,
   };
 }

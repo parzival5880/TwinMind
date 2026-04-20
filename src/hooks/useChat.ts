@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { format } from "date-fns";
 import { v4 as uuidv4 } from "uuid";
+import { buildContextBundle } from "@/lib/context";
 import { startTelemetryMeasurement } from "@/lib/telemetry";
 import type {
   ChatMessage,
   ChatResponse,
   ChatStreamEvent,
-  SerializedChatMessage,
+  RollingSummary,
+  SalientMoment,
   Suggestion,
+  SuggestionMeta,
   TranscriptChunk,
 } from "@/lib/types";
 
@@ -24,36 +26,48 @@ type UseChatResult = {
   addSuggestionAsMessage: (
     suggestion: Suggestion,
     transcript: TranscriptChunk[],
+    options?: SendMessageOptions,
   ) => Promise<void>;
   error: string | null;
   isLoading: boolean;
   messages: ChatMessage[];
-  retryMessage: (messageId: string, transcript: TranscriptChunk[]) => Promise<void>;
-  sendMessage: (message: string, transcript: TranscriptChunk[]) => Promise<void>;
+  retryMessage: (
+    messageId: string,
+    transcript: TranscriptChunk[],
+    options?: SendMessageOptions,
+  ) => Promise<void>;
+  sendMessage: (
+    message: string,
+    transcript: TranscriptChunk[],
+    options?: SendMessageOptions,
+  ) => Promise<void>;
 };
 
 type StreamRequestOptions = {
   appendUserMessage: boolean;
   assistantMessageId?: string;
   promptTemplate?: string;
+  selectedSuggestion?: Suggestion;
+  summary: RollingSummary | null;
+  salientMemory: SalientMoment[];
+  suggestionMeta?: SuggestionMeta;
 };
 
-const buildTranscriptString = (transcript: TranscriptChunk[]) =>
-  transcript
-    .map((chunk) => {
-      const speakerLabel = chunk.speaker ? `${chunk.speaker}: ` : "";
+type SendMessageOptions = {
+  rollingSummary?: RollingSummary | null;
+  salientMemory?: SalientMoment[];
+  suggestionMeta?: SuggestionMeta;
+};
 
-      return `[${format(chunk.timestamp, "HH:mm")}] ${speakerLabel}${chunk.text}`;
-    })
-    .join("\n");
+class ChatRequestError extends Error {
+  status?: number;
 
-const serializeChatHistory = (messages: ChatMessage[]): SerializedChatMessage[] =>
-  messages.map((message) => ({
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    timestamp: message.timestamp.toISOString(),
-  }));
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ChatRequestError";
+    this.status = status;
+  }
+}
 
 const parseSseEvent = (rawEvent: string): string[] =>
   rawEvent
@@ -66,7 +80,6 @@ const CHAT_FETCH_TIMEOUT_MS = 25_000;
 
 export function useChat({
   chatPromptTemplate,
-  contextWindow,
   detailedAnswerPromptTemplate,
   groqApiKey,
 }: UseChatOptions = {}): UseChatResult {
@@ -87,6 +100,10 @@ export function useChat({
       appendUserMessage,
       assistantMessageId,
       promptTemplate,
+      salientMemory,
+      selectedSuggestion,
+      suggestionMeta,
+      summary,
     }: StreamRequestOptions,
   ) => {
     const trimmedMessage = message.trim();
@@ -113,6 +130,8 @@ export function useChat({
       isStreaming: true,
       requestMessage: trimmedMessage,
       requestPromptTemplate: promptTemplate,
+      requestSuggestion: selectedSuggestion,
+      requestMeta: suggestionMeta,
       streamError: false,
     };
     const baseHistoryMessages = appendUserMessage
@@ -135,6 +154,8 @@ export function useChat({
                 isStreaming: true,
                 requestMessage: trimmedMessage,
                 requestPromptTemplate: promptTemplate,
+                requestSuggestion: selectedSuggestion,
+                requestMeta: suggestionMeta,
                 streamError: false,
                 timestamp: now,
               }
@@ -156,6 +177,13 @@ export function useChat({
     try {
       const completeFirstTokenTelemetry = startTelemetryMeasurement("chat_first_token");
       const completeLastTokenTelemetry = startTelemetryMeasurement("chat_last_token");
+      const context = buildContextBundle({
+        rollingSummary: summary,
+        chunks: transcript,
+        salientMemory,
+        meta: suggestionMeta,
+        chatHistory: nextHistoryMessages,
+      });
       const response = await fetch("/api/chat", {
         signal: abortController.signal,
         method: "POST",
@@ -164,18 +192,20 @@ export function useChat({
           ...(groqApiKey ? { "x-groq-api-key": groqApiKey } : {}),
         },
         body: JSON.stringify({
-          user_message: trimmedMessage,
-          full_transcript: buildTranscriptString(transcript),
-          chat_history: serializeChatHistory(nextHistoryMessages),
-          context_window: contextWindow,
-          prompt_template: promptTemplate,
+          message: trimmedMessage,
+          history: nextHistoryMessages,
+          suggestion: selectedSuggestion,
+          context,
         }),
       });
 
       if (!response.ok) {
         const payload = (await response.json()) as ChatResponse;
 
-        throw new Error(payload.error || "Failed to generate a detailed answer.");
+        throw new ChatRequestError(
+          payload.error || "Failed to generate a detailed answer.",
+          response.status,
+        );
       }
 
       if (!response.body) {
@@ -289,24 +319,40 @@ export function useChat({
     }
   };
 
-  const sendMessage = async (message: string, transcript: TranscriptChunk[]) => {
+  const sendMessage = async (
+    message: string,
+    transcript: TranscriptChunk[],
+    options: SendMessageOptions = {},
+  ) => {
     await sendMessageWithPrompt(message, transcript, {
       appendUserMessage: true,
       promptTemplate: chatPromptTemplate,
+      salientMemory: options.salientMemory ?? [],
+      summary: options.rollingSummary ?? null,
+      suggestionMeta: options.suggestionMeta,
     });
   };
 
   const addSuggestionAsMessage = async (
     suggestion: Suggestion,
     transcript: TranscriptChunk[],
+    options: SendMessageOptions = {},
   ) => {
     await sendMessageWithPrompt(suggestion.preview, transcript, {
       appendUserMessage: true,
       promptTemplate: detailedAnswerPromptTemplate ?? chatPromptTemplate,
+      selectedSuggestion: suggestion,
+      salientMemory: options.salientMemory ?? [],
+      summary: options.rollingSummary ?? null,
+      suggestionMeta: options.suggestionMeta,
     });
   };
 
-  const retryMessage = async (messageId: string, transcript: TranscriptChunk[]) => {
+  const retryMessage = async (
+    messageId: string,
+    transcript: TranscriptChunk[],
+    options: SendMessageOptions = {},
+  ) => {
     const messageToRetry = messagesRef.current.find((message) => message.id === messageId);
 
     if (!messageToRetry?.requestMessage) {
@@ -317,6 +363,10 @@ export function useChat({
       appendUserMessage: false,
       assistantMessageId: messageId,
       promptTemplate: messageToRetry.requestPromptTemplate,
+      selectedSuggestion: messageToRetry.requestSuggestion,
+      salientMemory: options.salientMemory ?? [],
+      summary: options.rollingSummary ?? null,
+      suggestionMeta: messageToRetry.requestMeta ?? options.suggestionMeta,
     });
   };
 

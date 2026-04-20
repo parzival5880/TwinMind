@@ -1,3 +1,5 @@
+import OpenAI from "openai";
+import Groq from "groq-sdk";
 import { NextResponse } from "next/server";
 import {
   APIKeyError,
@@ -7,11 +9,45 @@ import {
   streamDetailedAnswer,
   validateGroqApiKey,
 } from "@/lib/groq-client";
-import type { ChatRequest, ChatResponse, SerializedChatMessage } from "@/lib/types";
+import type {
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ContextBundle,
+  RollingSummary,
+  SalientMoment,
+  Suggestion,
+  SuggestionMeta,
+} from "@/lib/types";
 
 export const runtime = "edge";
 
-const isChatMessage = (value: unknown): value is SerializedChatMessage => {
+const ROLLING_SUMMARY_PHASES = new Set([
+  "exploring",
+  "converging",
+  "deciding",
+  "wrapping",
+  "unclear",
+]);
+const ROLLING_SUMMARY_TONES = new Set([
+  "analytical",
+  "tense",
+  "aligned",
+  "stalled",
+  "exploratory",
+  "neutral",
+]);
+const SALIENT_CATEGORIES = new Set([
+  "claim",
+  "question",
+  "decision",
+  "commitment",
+  "objection",
+  "key_entity",
+]);
+const SALIENT_STATUSES = new Set(["open", "addressed"]);
+
+const isChatMessage = (value: unknown): value is ChatMessage => {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -22,11 +58,11 @@ const isChatMessage = (value: unknown): value is SerializedChatMessage => {
     typeof candidate.id === "string" &&
     (candidate.role === "user" || candidate.role === "assistant") &&
     typeof candidate.content === "string" &&
-    typeof candidate.timestamp === "string"
+    (typeof candidate.timestamp === "string" || candidate.timestamp instanceof Date)
   );
 };
 
-const isChatRequestBody = (value: unknown): value is ChatRequest => {
+const isChatRequestBody = (value: unknown): value is Pick<ChatRequest, "message" | "history"> => {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -34,14 +70,109 @@ const isChatRequestBody = (value: unknown): value is ChatRequest => {
   const candidate = value as Record<string, unknown>;
 
   return (
-    typeof candidate.user_message === "string" &&
-    typeof candidate.full_transcript === "string" &&
-    Array.isArray(candidate.chat_history) &&
-    candidate.chat_history.every(isChatMessage) &&
-    (candidate.context_window === undefined || typeof candidate.context_window === "number") &&
-    (candidate.prompt_template === undefined || typeof candidate.prompt_template === "string")
+    typeof candidate.message === "string" &&
+    Array.isArray(candidate.history) &&
+    candidate.history.every(isChatMessage)
   );
 };
+
+const isSuggestionMeta = (value: unknown): value is SuggestionMeta => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.meeting_type === "string" &&
+    typeof candidate.conversation_stage === "string"
+  );
+};
+
+const isRollingSummary = (value: unknown): value is RollingSummary => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.topic === "string" &&
+    typeof candidate.stance === "string" &&
+    typeof candidate.phase === "string" &&
+    ROLLING_SUMMARY_PHASES.has(candidate.phase) &&
+    typeof candidate.tone === "string" &&
+    ROLLING_SUMMARY_TONES.has(candidate.tone) &&
+    Array.isArray(candidate.participants_heard) &&
+    candidate.participants_heard.every((participant) => typeof participant === "string")
+  );
+};
+
+const isSalientMoment = (value: unknown): value is SalientMoment => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.timestamp === "number" &&
+    typeof candidate.category === "string" &&
+    SALIENT_CATEGORIES.has(candidate.category) &&
+    typeof candidate.summary === "string" &&
+    typeof candidate.verbatim === "string" &&
+    typeof candidate.importance === "number" &&
+    candidate.importance >= 1 &&
+    candidate.importance <= 5 &&
+    typeof candidate.status === "string" &&
+    SALIENT_STATUSES.has(candidate.status)
+  );
+};
+
+const isSuggestion = (value: unknown): value is Suggestion => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.type === "string" &&
+    typeof candidate.preview === "string" &&
+    typeof candidate.full_content === "string" &&
+    typeof candidate.evidence_quote === "string" &&
+    (candidate.trigger === undefined || typeof candidate.trigger === "string")
+  );
+};
+
+const sanitizeContextBundle = (value: unknown): ContextBundle => {
+  if (typeof value !== "object" || value === null) {
+    return {
+      rollingSummary: null,
+      verbatimRecent: "",
+      salientMemory: [],
+      recentChatTopics: [],
+    };
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return {
+    rollingSummary: isRollingSummary(candidate.rollingSummary) ? candidate.rollingSummary : null,
+    verbatimRecent: typeof candidate.verbatimRecent === "string" ? candidate.verbatimRecent : "",
+    salientMemory: Array.isArray(candidate.salientMemory)
+      ? candidate.salientMemory.filter(isSalientMoment)
+      : [],
+    meta: isSuggestionMeta(candidate.meta) ? candidate.meta : undefined,
+    recentChatTopics: Array.isArray(candidate.recentChatTopics)
+      ? candidate.recentChatTopics.filter((topic): topic is string => typeof topic === "string")
+      : [],
+  };
+};
+
+const sanitizeSuggestion = (value: unknown) => (isSuggestion(value) ? value : undefined);
 
 const buildResponse = ({
   error,
@@ -80,9 +211,12 @@ export async function POST(request: Request) {
     const resolvedApiKey = validateGroqApiKey(resolveGroqApiKey(request) ?? "");
 
     initializeGroqClient(resolvedApiKey);
+    const candidate = payload as Record<string, unknown>;
     const completionStream = await streamDetailedAnswer({
-      ...payload,
-      chat_history: payload.chat_history.slice(-8),
+      message: payload.message,
+      history: payload.history,
+      suggestion: sanitizeSuggestion(candidate.suggestion),
+      context: sanitizeContextBundle(candidate.context),
     });
     const encoder = new TextEncoder();
 
@@ -93,14 +227,33 @@ export async function POST(request: Request) {
         };
 
         try {
+          let sawContentDelta = false;
+          let reasoningFallback = "";
+
           for await (const chunk of completionStream) {
             const token = chunk.choices[0]?.delta?.content ?? "";
+            const reasoningToken =
+              (
+                chunk.choices[0]?.delta as
+                  | {
+                      reasoning_content?: string | null;
+                    }
+                  | undefined
+              )?.reasoning_content ?? "";
 
             if (!token) {
+              if (reasoningToken) {
+                reasoningFallback += reasoningToken;
+              }
               continue;
             }
 
+            sawContentDelta = true;
             sendEvent(`data: ${JSON.stringify({ token })}\n\n`);
+          }
+
+          if (!sawContentDelta && reasoningFallback.trim()) {
+            sendEvent(`data: ${JSON.stringify({ token: reasoningFallback.trim() })}\n\n`);
           }
 
           sendEvent("data: [DONE]\n\n");
@@ -146,6 +299,44 @@ export async function POST(request: Request) {
         }),
         { status: 504 },
       );
+    }
+
+    if (error instanceof Groq.APIError || error instanceof OpenAI.APIError) {
+      if (error.status === 401) {
+        return NextResponse.json(
+          buildResponse({
+            error: "Invalid API key",
+            message: "",
+            success: false,
+            timestamp,
+          }),
+          { status: 401 },
+        );
+      }
+
+      if (error.status === 429) {
+        return NextResponse.json(
+          buildResponse({
+            error: "Rate limit hit",
+            message: "",
+            success: false,
+            timestamp,
+          }),
+          { status: 429 },
+        );
+      }
+
+      if (error.status === 408 || error.name === "APITimeoutError") {
+        return NextResponse.json(
+          buildResponse({
+            error: "Request timeout",
+            message: "",
+            success: false,
+            timestamp,
+          }),
+          { status: 504 },
+        );
+      }
     }
 
     const errorMessage =

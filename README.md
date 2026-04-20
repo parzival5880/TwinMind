@@ -3,6 +3,7 @@
 ## TL;DR
 - TwinMind is a real-time meeting copilot: it listens to live mic audio, transcribes it, surfaces 3 context-aware suggestions every 30 seconds, and turns suggestions into grounded chat answers.
 - Stack: Next.js App Router, TypeScript, React, Tailwind, Groq Whisper Large V3, Groq `openai/gpt-oss-120b`, and `llama-3.1-8b-instant` for background summarization.
+- Default setup uses Groq for all models. Optionally set `AZURE_OPENAI_*` env vars to route `gpt-oss-120b` and `whisper-large-v3` to Azure AI Foundry during development; behavior and prompts are identical.
 - Local run: clone, install, add a Groq key to `.env.local`, then `npm run dev`.
 - Deployed URL: [https://twinmind-two.vercel.app](https://twinmind-two.vercel.app)
 - Groq key: [https://console.groq.com](https://console.groq.com)

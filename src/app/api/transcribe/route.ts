@@ -1,3 +1,5 @@
+import OpenAI from "openai";
+import Groq from "groq-sdk";
 import { NextResponse } from "next/server";
 import {
   APIKeyError,
@@ -56,6 +58,7 @@ export async function POST(request: Request) {
   }
 
   const audioValue = formData.get("audio");
+  const previousTailValue = formData.get("previous_tail");
   const promptValue = formData.get("prompt");
 
   if (!(audioValue instanceof Blob) || audioValue.size === 0) {
@@ -72,11 +75,17 @@ export async function POST(request: Request) {
 
   try {
     const resolvedApiKey = validateGroqApiKey(resolveGroqApiKey(request) ?? "");
+    const previousTail =
+      typeof previousTailValue === "string" && previousTailValue.trim()
+        ? previousTailValue.trim().slice(-240)
+        : typeof promptValue === "string" && promptValue.trim()
+          ? promptValue.trim().slice(-240)
+          : undefined;
 
     initializeGroqClient(resolvedApiKey);
 
     const result = await transcribeAudio(audioValue, {
-      prompt: typeof promptValue === "string" ? promptValue : undefined,
+      prompt: previousTail,
     });
 
     return NextResponse.json(
@@ -111,6 +120,44 @@ export async function POST(request: Request) {
         }),
         { status: 504 },
       );
+    }
+
+    if (error instanceof OpenAI.APIError || error instanceof Groq.APIError) {
+      if (error.status === 401) {
+        return NextResponse.json(
+          buildResponse({
+            error: "Invalid API key",
+            success: false,
+            text: "",
+            timestamp,
+          }),
+          { status: 401 },
+        );
+      }
+
+      if (error.status === 429) {
+        return NextResponse.json(
+          buildResponse({
+            error: "Rate limit hit",
+            success: false,
+            text: "",
+            timestamp,
+          }),
+          { status: 429 },
+        );
+      }
+
+      if (error.status === 408 || error.name === "APITimeoutError") {
+        return NextResponse.json(
+          buildResponse({
+            error: "Request timeout",
+            success: false,
+            text: "",
+            timestamp,
+          }),
+          { status: 504 },
+        );
+      }
     }
 
     const errorMessage =

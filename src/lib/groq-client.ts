@@ -1,11 +1,17 @@
+import OpenAI from "openai";
 import Groq from "groq-sdk";
 import {
-  DEFAULT_PROMPTS,
+  getLargeModelClient,
+  getLargeModelName,
+  isLargeModelExpandedContext,
+} from "@/lib/llm-clients";
+import {
+  buildChatSystemPrompt,
   buildSuggestionsPrompt,
 } from "@/lib/prompts";
 import type {
   ChatRequest,
-  SerializedChatMessage,
+  ChatMessage,
   Suggestion,
   SuggestionMeta,
   SuggestionsRequest,
@@ -17,7 +23,6 @@ const GROQ_TRANSCRIPTION_TIMEOUT_MS = 15_000;
 const GROQ_SUGGESTIONS_TIMEOUT_MS = 8_000;
 const GROQ_CHAT_TIMEOUT_MS = 25_000;
 const GROQ_KEY_VALIDATION_TIMEOUT_MS = 10_000;
-const GPT_OSS_120B_MODEL = "openai/gpt-oss-120b";
 const WHISPER_MODEL = "whisper-large-v3";
 const SUGGESTION_TYPES = [
   "question",
@@ -28,6 +33,7 @@ const SUGGESTION_TYPES = [
 ] as const;
 
 let groqClient: Groq | null = null;
+let groqApiKey: string | null = null;
 
 export class APIKeyError extends Error {
   constructor(message: string) {
@@ -91,6 +97,7 @@ export const validateGroqApiKey = (apiKey: string) => {
 export const initializeGroqClient = (apiKey: string) => {
   const normalizedApiKey = validateGroqApiKey(apiKey);
 
+  groqApiKey = normalizedApiKey;
   groqClient = new Groq({
     apiKey: normalizedApiKey,
     dangerouslyAllowBrowser: typeof window !== "undefined",
@@ -113,6 +120,17 @@ export const isClientInitialized = () => groqClient !== null;
 
 export const clearGroqClient = () => {
   groqClient = null;
+  groqApiKey = null;
+};
+
+const getGroqFallbackApiKey = () => {
+  if (!groqApiKey) {
+    throw new APIKeyError(
+      "The Groq client has not been initialized yet. Save a valid API key in settings first.",
+    );
+  }
+
+  return groqApiKey;
 };
 
 export const testGroqApiKey = async (apiKey: string): Promise<void> => {
@@ -155,6 +173,38 @@ const buildAudioFilename = (audioBlob: Blob) => {
 
   return `recording.${extension}`;
 };
+
+function extractAssistantText(
+  msg: { content?: string | null; reasoning_content?: string | null } | undefined,
+): string {
+  const primary = (msg?.content ?? "").trim();
+
+  if (primary) {
+    return primary;
+  }
+
+  const reasoning = ((msg as { reasoning_content?: string | null } | undefined)?.reasoning_content ?? "")
+    .trim();
+
+  return reasoning;
+}
+
+function extractJsonObject(raw: string): string {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+
+  const first = raw.indexOf("{");
+  const last = raw.lastIndexOf("}");
+
+  if (first !== -1 && last !== -1 && last > first) {
+    return raw.slice(first, last + 1);
+  }
+
+  return raw.trim();
+}
 
 export type TranscriptionResult = {
   text: string;
@@ -250,6 +300,98 @@ const countWords = (value: string) =>
     .split(/\s+/)
     .filter(Boolean).length;
 
+const SUGGESTION_STOPWORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "but",
+  "to",
+  "of",
+  "in",
+  "on",
+  "at",
+  "for",
+  "with",
+  "by",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "can",
+  "could",
+  "should",
+  "this",
+  "that",
+  "these",
+  "those",
+  "it",
+  "its",
+  "as",
+  "about",
+  "from",
+  "into",
+  "if",
+  "then",
+  "so",
+  "than",
+  "too",
+  "very",
+  "not",
+  "no",
+  "you",
+  "your",
+  "their",
+  "them",
+  "they",
+  "we",
+  "our",
+  "us",
+]);
+
+const tokenizeSuggestionText = (value: string) =>
+  new Set(
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((token) => token.length > 2 && !SUGGESTION_STOPWORDS.has(token)),
+  );
+
+const jaccardSimilarity = (a: Set<string>, b: Set<string>) => {
+  if (a.size === 0 && b.size === 0) {
+    return 1;
+  }
+
+  let intersectionCount = 0;
+
+  a.forEach((token) => {
+    if (b.has(token)) {
+      intersectionCount += 1;
+    }
+  });
+
+  const unionCount = a.size + b.size - intersectionCount;
+
+  if (unionCount === 0) {
+    return 0;
+  }
+
+  return intersectionCount / unionCount;
+};
+
 const normalizeSuggestion = (
   suggestion: Omit<Suggestion, "id">,
   index: number,
@@ -259,8 +401,41 @@ const normalizeSuggestion = (
   preview: suggestion.preview.trim(),
   full_content: suggestion.full_content.trim(),
   evidence_quote: suggestion.evidence_quote.trim(),
+  why_relevant: suggestion.why_relevant.trim(),
   trigger: suggestion.trigger?.trim() || undefined,
 });
+
+const clampFullContentToSentenceLimit = (fullContent: string, maxWords: number) => {
+  const normalized = fullContent.trim();
+  const sentences = normalized.match(/[^.!?…]+[.!?…]["')\]]*\s*/g);
+
+  if (sentences && sentences.length > 0) {
+    const keptSentences: string[] = [];
+    let runningWords = 0;
+
+    for (const sentence of sentences) {
+      const trimmedSentence = sentence.trim();
+      const sentenceWordCount = countWords(trimmedSentence);
+
+      if (keptSentences.length > 0 && runningWords + sentenceWordCount > maxWords) {
+        break;
+      }
+
+      keptSentences.push(trimmedSentence);
+      runningWords += sentenceWordCount;
+
+      if (runningWords >= maxWords) {
+        break;
+      }
+    }
+
+    if (keptSentences.length > 0) {
+      return keptSentences.join(" ").trim();
+    }
+  }
+
+  return normalized.split(/\s+/).filter(Boolean).slice(0, maxWords).join(" ").trim();
+};
 
 const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string) => {
   if (suggestions.length !== 3) {
@@ -270,6 +445,7 @@ const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string)
   const uniqueTypes = new Set<Suggestion["type"]>();
   const uniqueFingerprints = new Set<string>();
   const normalizedVerbatim = verbatimRecent?.trim().toLowerCase() || "";
+  const validSuggestions: Suggestion[] = [];
 
   suggestions.forEach((suggestion) => {
     if (!SUGGESTION_TYPES.includes(suggestion.type)) {
@@ -277,7 +453,6 @@ const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string)
     }
 
     const previewWordCount = countWords(suggestion.preview);
-    const fullContentWordCount = countWords(suggestion.full_content);
 
     // Preview target is ≤25 words but we allow up to 40 before rejecting to
     // avoid spurious retries on borderline responses.
@@ -285,9 +460,25 @@ const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string)
       throw new SuggestionGenerationError("Suggestion preview length validation failed.");
     }
 
-    // Full content target is 70-140 words.
-    if (fullContentWordCount < 70 || fullContentWordCount > 140) {
-      throw new SuggestionGenerationError("Suggestion full_content must be 70-140 words.");
+    let normalizedFullContent = suggestion.full_content.trim();
+    let fullContentWordCount = countWords(normalizedFullContent);
+
+    if (fullContentWordCount < 50) {
+      console.warn("[TwinMind][suggestions][validator] dropping short full_content", {
+        suggestion_id: suggestion.id,
+        word_count: fullContentWordCount,
+      });
+      return;
+    }
+
+    if (fullContentWordCount > 200) {
+      normalizedFullContent = clampFullContentToSentenceLimit(normalizedFullContent, 200);
+      fullContentWordCount = countWords(normalizedFullContent);
+      console.warn("[TwinMind][suggestions][validator] truncating long full_content", {
+        suggestion_id: suggestion.id,
+        truncated_word_count: fullContentWordCount,
+        original_word_count: countWords(suggestion.full_content),
+      });
     }
 
     // evidence_quote: non-empty, ≤15 words, must appear in verbatim_recent.
@@ -305,6 +496,25 @@ const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string)
       throw new SuggestionGenerationError("Suggestion evidence_quote not found in verbatim_recent.");
     }
 
+    const whyRelevant = suggestion.why_relevant.trim();
+
+    if (!whyRelevant) {
+      throw new SuggestionGenerationError("Suggestion why_relevant must be non-empty.");
+    }
+
+    if (whyRelevant.length > 150) {
+      throw new SuggestionGenerationError("Suggestion why_relevant must be ≤150 characters.");
+    }
+
+    const previewTokens = tokenizeSuggestionText(suggestion.preview);
+    const whyRelevantTokens = tokenizeSuggestionText(whyRelevant);
+
+    if (jaccardSimilarity(previewTokens, whyRelevantTokens) > 0.8) {
+      throw new SuggestionGenerationError(
+        "why_relevant restates preview; must explain linkage to evidence_quote",
+      );
+    }
+
     const fingerprint = `${suggestion.type}::${suggestion.preview.toLowerCase()}::${suggestion.full_content.toLowerCase()}`;
 
     if (uniqueFingerprints.has(fingerprint)) {
@@ -313,11 +523,23 @@ const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string)
 
     uniqueTypes.add(suggestion.type);
     uniqueFingerprints.add(fingerprint);
+    validSuggestions.push({
+      ...suggestion,
+      full_content: normalizedFullContent,
+    });
   });
 
-  if (uniqueTypes.size < 2) {
+  if (validSuggestions.length === 0) {
+    throw new SuggestionGenerationError(
+      "All suggestions failed word-count validation (target 70-140 words).",
+    );
+  }
+
+  if (validSuggestions.length > 1 && uniqueTypes.size < 2) {
     throw new SuggestionGenerationError("Suggestion type mix validation failed.");
   }
+
+  return validSuggestions;
 };
 
 type SuggestionsSchemaResponse = {
@@ -327,6 +549,7 @@ type SuggestionsSchemaResponse = {
     preview: string;
     full_content: string;
     evidence_quote: string;
+    why_relevant: string;
     trigger: string;
   }>;
 };
@@ -357,9 +580,10 @@ const suggestionsResponseSchema = {
           preview: { type: "string" },
           full_content: { type: "string" },
           evidence_quote: { type: "string", minLength: 1, maxLength: 120 },
+          why_relevant: { type: "string", minLength: 10, maxLength: 150 },
           trigger: { type: "string" },
         },
-        required: ["type", "preview", "full_content", "evidence_quote", "trigger"],
+        required: ["type", "preview", "full_content", "evidence_quote", "why_relevant", "trigger"],
         additionalProperties: false,
       },
     },
@@ -373,17 +597,26 @@ export type GenerateSuggestionsResult = {
   meta: SuggestionMeta;
 };
 
-export const generateSuggestions = async ({
-  avoid_phrases,
-  context_window,
-  full_transcript,
-  prompt_template,
-  recent_chat_topics,
-  rolling_summary,
-  transcript_chunk,
-  verbatim_recent,
-}: SuggestionsRequest): Promise<GenerateSuggestionsResult> => {
-  const client = getGroqClient();
+export const generateSuggestions = async (
+  {
+    avoid_phrases,
+    conversation_stage,
+    context_window,
+    full_transcript,
+    meeting_type,
+    prompt_template,
+    recent_chat_topics,
+    rolling_summary,
+    transcript_chunk,
+    verbatim_recent,
+  }: SuggestionsRequest,
+  salientMemoryRendered?: string,
+): Promise<GenerateSuggestionsResult> => {
+  const client = getLargeModelClient(getGroqFallbackApiKey());
+  const providerMode =
+    process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_API_KEY
+      ? "azure-foundry-models"
+      : "groq-fallback";
   const contextWindow = Math.max(256, context_window ?? 1800);
   const { prompt } = buildSuggestionsPrompt({
     contextWindow,
@@ -394,23 +627,27 @@ export const generateSuggestions = async ({
     avoidPhrases: avoid_phrases,
     promptTemplate: prompt_template,
     transcriptChunk: transcript_chunk,
+    meetingType: meeting_type,
+    conversationStage: conversation_stage,
+    salientMemoryRendered,
   });
 
-  try {
+  const systemMessage = {
+    role: "system" as const,
+    content:
+      "You are TwinMind, a real-time meeting copilot. Generate fresh, transcript-grounded meeting suggestions that are immediately useful and do not repeat prior ideas. Never fabricate facts, vendor details, pricing, or answers to unresolved questions.",
+  };
+  const userMessage = { role: "user" as const, content: prompt };
+  const baseMessages = [systemMessage, userMessage];
+  const suggestionsMaxTokens = isLargeModelExpandedContext() ? 2400 : 1500;
+
+  const attemptGeneration = async (
+    messages: Array<{ role: "system" | "user"; content: string }>,
+  ): Promise<GenerateSuggestionsResult> => {
     const completion = await client.chat.completions.create(
       {
-        model: GPT_OSS_120B_MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are TwinMind, a real-time meeting copilot. Generate fresh, transcript-grounded meeting suggestions that are immediately useful and do not repeat prior ideas. Never fabricate facts, vendor details, pricing, or answers to unresolved questions.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
+        model: getLargeModelName(),
+        messages,
         response_format: {
           type: "json_schema",
           json_schema: {
@@ -421,7 +658,7 @@ export const generateSuggestions = async ({
         },
         temperature: 0.6,
         top_p: 0.9,
-        max_tokens: 900,
+        max_tokens: suggestionsMaxTokens,
         stop: null,
       },
       {
@@ -430,25 +667,58 @@ export const generateSuggestions = async ({
       },
     );
 
-    const rawContent = completion.choices[0]?.message?.content;
+    const rawContent = extractAssistantText(completion.choices[0]?.message);
 
     if (!rawContent) {
       throw new SuggestionGenerationError("Failed to parse suggestions from model output.");
     }
 
-    const parsedContent = JSON.parse(rawContent) as SuggestionsSchemaResponse;
+    const parsedContent = JSON.parse(extractJsonObject(rawContent)) as SuggestionsSchemaResponse;
     const suggestions = parsedContent.suggestions.map((suggestion, index) =>
       normalizeSuggestion(suggestion, index),
     );
-
-    validateSuggestions(suggestions, verbatim_recent);
+    const validatedSuggestions = validateSuggestions(suggestions, verbatim_recent);
 
     const meta: SuggestionMeta = {
       meeting_type: parsedContent.meta?.meeting_type?.trim() || "unspecified",
       conversation_stage: parsedContent.meta?.conversation_stage?.trim() || "unspecified",
     };
 
-    return { suggestions, meta };
+    return { suggestions: validatedSuggestions, meta };
+  };
+
+  try {
+    try {
+      return await attemptGeneration(baseMessages);
+    } catch (firstError) {
+      if (
+        firstError instanceof SuggestionGenerationError &&
+        firstError.message.includes("type mix")
+      ) {
+        console.warn("[TwinMind][suggestions] type-mix violation detected, retrying once");
+        try {
+          return await attemptGeneration([
+            ...baseMessages,
+            {
+              role: "user",
+              content:
+                "Your previous attempt returned suggestions that collapsed to one type. Regenerate with at least 2 distinct types chosen from { question, talking_point, answer, fact_check, clarification }. Pick types that reflect what the transcript actually calls for: use 'answer' or 'fact_check' only when the transcript contains a specific answerable question or verifiable claim; use 'clarification' when language is genuinely ambiguous; default to 'question' + 'talking_point' otherwise. Return the same strict JSON schema.",
+            },
+          ]);
+        } catch (retryError) {
+          if (
+            retryError instanceof SuggestionGenerationError &&
+            retryError.message.includes("type mix")
+          ) {
+            throw new SuggestionGenerationError(
+              "Suggestion type mix validation failed (after 1 retry).",
+            );
+          }
+          throw retryError;
+        }
+      }
+      throw firstError;
+    }
   } catch (error) {
     if (
       error instanceof APIKeyError ||
@@ -460,6 +730,33 @@ export const generateSuggestions = async ({
 
     if (error instanceof SyntaxError) {
       throw new SuggestionGenerationError("Failed to parse suggestions from model output.");
+    }
+
+    if (error instanceof Groq.APIError || error instanceof OpenAI.APIError) {
+      const typedError = error as {
+        body?: unknown;
+        error?: unknown;
+        headers?: Headers | Record<string, string>;
+        message: string;
+        name: string;
+        request_id?: string | null;
+        status?: number;
+      };
+
+      console.error("[TwinMind][suggestions][provider-error]", {
+        body: typedError.body,
+        error: typedError.error,
+        headers:
+          typedError.headers instanceof Headers
+            ? Object.fromEntries(typedError.headers.entries())
+            : typedError.headers,
+        message: typedError.message,
+        name: typedError.name,
+        provider_mode: providerMode,
+        request_id: typedError.request_id,
+        status: typedError.status,
+      });
+      throw error;
     }
 
     if (error instanceof Groq.AuthenticationError || error instanceof Groq.PermissionDeniedError) {
@@ -478,7 +775,7 @@ export const generateSuggestions = async ({
   }
 };
 
-const buildChatHistoryContext = (chatHistory: SerializedChatMessage[]) => {
+const buildChatHistoryContext = (chatHistory: ChatMessage[]) => {
   const recentMessages = chatHistory.slice(-8);
 
   if (recentMessages.length === 0) {
@@ -486,169 +783,30 @@ const buildChatHistoryContext = (chatHistory: SerializedChatMessage[]) => {
   }
 
   return recentMessages
-    .map((message) => `[${message.timestamp}] ${message.role.toUpperCase()}: ${message.content}`)
+    .map((message) => {
+      const timestamp = message.timestamp instanceof Date
+        ? message.timestamp.toISOString()
+        : String(message.timestamp);
+
+      return `[${timestamp}] ${message.role.toUpperCase()}: ${message.content}`;
+    })
     .join("\n");
 };
 
-type TranscriptLine = {
-  minuteLabel: string;
-  text: string;
-};
-
-const toMinuteLabel = (rawTimestamp: string) => {
-  const normalized = rawTimestamp.trim();
-
-  if (/^\d{2}:\d{2}$/.test(normalized)) {
-    return normalized;
-  }
-
-  if (/^\d{2}:\d{2}:\d{2}$/.test(normalized)) {
-    return normalized.slice(0, 5);
-  }
-
-  const parsedDate = new Date(normalized);
-
-  if (Number.isNaN(parsedDate.getTime())) {
-    return "00:00";
-  }
-
-  return parsedDate.toISOString().slice(11, 16);
-};
-
-const parseTranscriptLines = (fullTranscript: string): TranscriptLine[] =>
-  fullTranscript
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const match = line.match(/^\[([^\]]+)\]\s*(.+)$/);
-
-      if (!match) {
-        return {
-          minuteLabel: "00:00",
-          text: line,
-        };
-      }
-
-      return {
-        minuteLabel: toMinuteLabel(match[1]),
-        text: match[2].trim(),
-      };
-    });
-
-const formatTranscriptLine = (line: TranscriptLine) => `[${line.minuteLabel}] ${line.text}`;
-
-const buildOlderTranscriptSummary = (lines: TranscriptLine[], tokenBudget: number) => {
-  if (lines.length === 0) {
-    return "(no earlier transcript summary)";
-  }
-
-  const summaryLines: string[] = [];
-  let estimatedTokens = 0;
-
-  for (const line of lines) {
-    const compactText =
-      line.text.length > 140 ? `${line.text.slice(0, 137).trimEnd()}...` : line.text;
-    const summaryLine = `- [${line.minuteLabel}] ${compactText}`;
-    const lineTokens = Math.ceil(summaryLine.length / 4);
-
-    if (summaryLines.length > 0 && estimatedTokens + lineTokens > tokenBudget) {
-      break;
-    }
-
-    summaryLines.push(summaryLine);
-    estimatedTokens += lineTokens;
-  }
-
-  return summaryLines.join("\n");
-};
-
-const buildChatTranscriptContext = (fullTranscript: string, contextWindow: number) => {
-  const transcriptLines = parseTranscriptLines(fullTranscript);
-
-  if (transcriptLines.length === 0) {
-    return "No meeting transcript is available yet.";
-  }
-
-  const normalizedTranscript = transcriptLines.map(formatTranscriptLine).join("\n");
-
-  if (Math.ceil(normalizedTranscript.length / 4) <= contextWindow) {
-    return normalizedTranscript;
-  }
-
-  const recentBudget = Math.max(256, Math.floor(contextWindow * 0.6));
-  const summaryBudget = Math.max(128, contextWindow - recentBudget);
-  const recentLines: TranscriptLine[] = [];
-  let recentTokens = 0;
-
-  for (let index = transcriptLines.length - 1; index >= 0; index -= 1) {
-    const line = transcriptLines[index];
-    const lineTokens = Math.ceil(formatTranscriptLine(line).length / 4) + 1;
-
-    if (recentLines.length > 0 && recentTokens + lineTokens > recentBudget) {
-      break;
-    }
-
-    recentLines.unshift(line);
-    recentTokens += lineTokens;
-  }
-
-  const olderLines = transcriptLines.slice(0, Math.max(0, transcriptLines.length - recentLines.length));
-  const rollingSummary = buildOlderTranscriptSummary(olderLines, summaryBudget);
-  const verbatimRecent = recentLines.map(formatTranscriptLine).join("\n");
-
-  return `ROLLING SUMMARY OF EARLIER TRANSCRIPT:
-${rollingSummary}
-
-RECENT VERBATIM TRANSCRIPT:
-${verbatimRecent}`;
-};
-
-const buildDetailedAnswerPrompt = ({
-  chat_history,
-  context_window,
-  full_transcript,
-  prompt_template,
-  user_message,
-}: ChatRequest) => {
-  const contextWindow = Math.max(512, context_window ?? 4000);
-  const transcriptWindow = buildChatTranscriptContext(full_transcript, contextWindow);
-  const chatHistoryContext = buildChatHistoryContext(chat_history.slice(-8));
-  const promptTemplate = prompt_template?.trim() || DEFAULT_PROMPTS.chat;
-  const trimmedUserMessage = user_message.trim();
-  const prompt = promptTemplate
-    .replace("{full_transcript}", transcriptWindow)
-    .replace("{chat_history}", chatHistoryContext)
-    .replace("{user_message}", trimmedUserMessage)
-    .replace("{user_query}", trimmedUserMessage);
-
-  return {
-    chatHistoryContext,
-    prompt,
-    transcriptWindow,
-    trimmedUserMessage,
-  };
-};
-
 const buildDetailedAnswerMessages = (request: ChatRequest) => {
-  const { chatHistoryContext, prompt, transcriptWindow, trimmedUserMessage } =
-    buildDetailedAnswerPrompt(request);
+  const chatHistoryContext = buildChatHistoryContext(request.history.slice(-8));
+  const trimmedUserMessage = request.message.trim();
+  const systemPrompt = buildChatSystemPrompt(request.context, request.suggestion);
 
   return {
     messages: [
       {
         role: "system" as const,
-        content:
-          "You are TwinMind, a real-time meeting copilot. Answer clearly, stay grounded in the transcript, maintain continuity with prior chat messages, and be helpful without fabricating details. If the transcript raises a question or unknown, keep it unresolved unless the transcript explicitly answers it. Cite transcript evidence as [HH:MM] \"quoted phrase\" when relevant.",
+        content: systemPrompt,
       },
       {
         role: "user" as const,
-        content: `${prompt}
-
-FULL TRANSCRIPT WINDOW:
-${transcriptWindow}
-
-RECENT CHAT HISTORY:
+        content: `RECENT CHAT HISTORY:
 ${chatHistoryContext}
 
 USER MESSAGE:
@@ -659,19 +817,20 @@ ${trimmedUserMessage}`,
 };
 
 export const streamDetailedAnswer = async (request: ChatRequest) => {
-  const client = getGroqClient();
+  const client = getLargeModelClient(getGroqFallbackApiKey());
   const { messages } = buildDetailedAnswerMessages(request);
+  const chatMaxTokens = isLargeModelExpandedContext() ? 3200 : 2500;
 
   try {
     return await client.chat.completions.create(
       {
-        model: GPT_OSS_120B_MODEL,
+        model: getLargeModelName(),
         messages,
         response_format: {
           type: "text",
         },
-        temperature: 0.5,
-        max_tokens: 800,
+        temperature: 0.3,
+        max_tokens: chatMaxTokens,
         stream: true,
       },
       {
@@ -681,6 +840,10 @@ export const streamDetailedAnswer = async (request: ChatRequest) => {
     );
   } catch (error) {
     if (error instanceof APIKeyError || error instanceof TimeoutError || error instanceof ChatGenerationError) {
+      throw error;
+    }
+
+    if (error instanceof Groq.APIError || error instanceof OpenAI.APIError) {
       throw error;
     }
 
@@ -701,31 +864,30 @@ export const streamDetailedAnswer = async (request: ChatRequest) => {
 };
 
 export const generateDetailedAnswer = async ({
-  chat_history,
-  context_window,
-  full_transcript,
-  prompt_template,
-  user_message,
+  context,
+  history,
+  message,
+  suggestion,
 }: ChatRequest): Promise<string> => {
-  const client = getGroqClient();
+  const client = getLargeModelClient(getGroqFallbackApiKey());
   const { messages } = buildDetailedAnswerMessages({
-    chat_history,
-    context_window,
-    full_transcript,
-    prompt_template,
-    user_message,
+    context,
+    history,
+    message,
+    suggestion,
   });
+  const chatMaxTokens = isLargeModelExpandedContext() ? 3200 : 2500;
 
   try {
     const completion = await client.chat.completions.create(
       {
-        model: GPT_OSS_120B_MODEL,
+        model: getLargeModelName(),
         messages,
         response_format: {
           type: "text",
         },
-        temperature: 0.5,
-        max_tokens: 800,
+        temperature: 0.3,
+        max_tokens: chatMaxTokens,
       },
       {
         timeout: GROQ_CHAT_TIMEOUT_MS,
@@ -733,7 +895,7 @@ export const generateDetailedAnswer = async ({
       },
     );
 
-    const content = completion.choices[0]?.message?.content?.trim();
+    const content = extractAssistantText(completion.choices[0]?.message);
 
     if (!content) {
       throw new ChatGenerationError("Failed to generate a detailed answer.");
@@ -742,6 +904,10 @@ export const generateDetailedAnswer = async ({
     return content;
   } catch (error) {
     if (error instanceof APIKeyError || error instanceof TimeoutError || error instanceof ChatGenerationError) {
+      throw error;
+    }
+
+    if (error instanceof Groq.APIError || error instanceof OpenAI.APIError) {
       throw error;
     }
 

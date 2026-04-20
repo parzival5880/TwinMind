@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { useTranscript } from "@/hooks/useTranscript";
 import { startTelemetryMeasurement } from "@/lib/telemetry";
+import { dedupeOverlap } from "@/lib/transcript-dedupe";
 import {
   DEFAULT_VAD_THRESHOLD,
   computeRms,
@@ -22,7 +23,9 @@ type UseAudioOptions = {
 
 type UseAudioResult = {
   clearTranscript: () => void;
+  committedTranscript: TranscriptChunk[];
   error: string | null;
+  flushPendingChunk: () => Promise<void>;
   isRecording: boolean;
   isSpeaking: boolean;
   isTranscribing: boolean;
@@ -48,8 +51,10 @@ type AudioSlice = {
 type PendingTranscriptionWindow = {
   attempt: number;
   audioBlob: Blob;
+  endTimestampMs: number;
   generation: number;
-  promptHint: string;
+  previousTail: string;
+  startTimestampMs: number;
   timestamp: Date;
   windowId: string;
 };
@@ -62,20 +67,17 @@ type CompletedTranscriptionWindow = {
   endMs?: number;
 };
 
-const MEDIA_RECORDER_TIMESLICE_MS = 1_000;
-const TRANSCRIPTION_WINDOW_MS = 15_000;
-const TRANSCRIPTION_OVERLAP_MS = 3_000;
-const TRANSCRIPTION_STEP_MS = TRANSCRIPTION_WINDOW_MS - TRANSCRIPTION_OVERLAP_MS;
-const TRANSCRIPTION_WINDOW_SLICES = TRANSCRIPTION_WINDOW_MS / MEDIA_RECORDER_TIMESLICE_MS;
-const TRANSCRIPTION_STEP_SLICES = TRANSCRIPTION_STEP_MS / MEDIA_RECORDER_TIMESLICE_MS;
+const MEDIA_RECORDER_TIMESLICE_MS = 5_000;
 const MAX_PARALLEL_TRANSCRIPTIONS = 2;
 const MAX_PENDING_TRANSCRIPTION_NOTICE = 3;
-const MAX_WINDOW_HISTORY_SLICES = 45;
-const MAX_TRANSCRIPT_PROMPT_CHARS = 200;
+const MAX_TRANSCRIPT_TAIL_CHARS = 240;
 const MIN_SPEECH_RATIO = 0.2;
 const VAD_FRAME_INTERVAL_MS = 100;
 const VAD_WINDOW_MS = 15_000;
 const TRANSCRIBE_FETCH_TIMEOUT_MS = 15_000;
+const PENDING_TAIL_FLUSH_AFTER_MS = 10_000;
+const PENDING_TAIL_WORD_SAFETY_LIMIT = 40;
+const PENDING_TAIL_WORD_COMMIT_COUNT = 20;
 const ERROR_BROWSER_UNSUPPORTED =
   "This browser does not support microphone recording with MediaRecorder.";
 const ERROR_MIC_PERMISSION_DENIED =
@@ -121,8 +123,6 @@ const isWhisperHallucination = (text: string) => {
   return false;
 };
 
-const EARLY_FIRE_SLICES = 5;
-
 const isNetworkError = (error: unknown) => {
   if (!(error instanceof Error)) {
     return false;
@@ -158,48 +158,19 @@ const resolveRecorderOptions = () => {
   };
 };
 
-/** Timestamp-based stitching: given overlapping windows, trims text whose
- *  audio range falls entirely within a previous window's range. Falls back to
- *  the raw text when timestamps are unavailable. */
-const stitchByTimestamp = (
-  rawText: string,
-  previousEndMs: number | undefined,
-  currentStartMs: number | undefined,
-) => {
-  const trimmed = rawText.trim();
+const TERMINAL_PUNCTUATION_PATTERN = /[.!?…]["')\]]?\s*$/;
 
-  if (!trimmed) {
-    return trimmed;
-  }
-
-  // If we don't have timestamps for both sides, return as-is.
-  if (previousEndMs === undefined || currentStartMs === undefined) {
-    return trimmed;
-  }
-
-  // If this window starts after the previous window ended, no overlap.
-  if (currentStartMs >= previousEndMs) {
-    return trimmed;
-  }
-
-  // There's overlap. We accept the full text but let the caller know the
-  // overlap region via timestamps. In practice, when Whisper re-transcribes
-  // the overlap region, it produces near-identical text. The timestamp
-  // boundary gives us a clean cut: drop any window whose *entire* range is
-  // already covered.
-  return trimmed;
-};
-
-const getTranscriptTailPrompt = (transcript: TranscriptChunk[]) => {
-  const transcriptTail = transcript
-    .map((chunk) => chunk.text.trim())
+const joinTranscriptText = (parts: string[]) =>
+  parts
+    .map((part) => part.trim())
     .filter(Boolean)
     .join(" ")
-    .slice(-MAX_TRANSCRIPT_PROMPT_CHARS)
     .trim();
 
-  return transcriptTail;
-};
+const buildTranscriptText = (chunks: TranscriptChunk[]) =>
+  joinTranscriptText(chunks.map((chunk) => chunk.text));
+
+const splitTranscriptWords = (value: string) => value.trim().split(/\s+/).filter(Boolean);
 
 const dispatchAudioDebugEvent = (eventName: string) => {
   if (typeof window === "undefined") {
@@ -225,6 +196,8 @@ export function useAudio({
 }: UseAudioOptions = {}): UseAudioResult {
   const {
     clearTranscript: baseClearTranscript,
+    committedTranscript,
+    replaceCommittedTranscript,
     replaceTranscript,
     transcript,
   } = useTranscript();
@@ -243,23 +216,21 @@ export function useAudio({
   const durationIntervalRef = useRef<number | null>(null);
   const noticeTimeoutRef = useRef<number | null>(null);
   const vadIntervalRef = useRef<number | null>(null);
+  const chunkCycleTimeoutRef = useRef<number | null>(null);
   const isRecordingRef = useRef(false);
   const isRestartingRecorderRef = useRef(false);
+  const isChunkRolloverRef = useRef(false);
   const lastSliceTimestampRef = useRef<number | null>(null);
   const pendingWindowsRef = useRef<PendingTranscriptionWindow[]>([]);
   const recordingStartTimeRef = useRef<number | null>(null);
   const shouldKeepRecordingRef = useRef(false);
-  const sliceHistoryRef = useRef<AudioSlice[]>([]);
   const transcriptGenerationRef = useRef(0);
-  const transcriptRef = useRef<TranscriptChunk[]>([]);
+  const lastTranscriptTailRef = useRef("");
   const completedWindowsRef = useRef<CompletedTranscriptionWindow[]>([]);
   const vadFramesRef = useRef<Array<{ rms: number; timestampMs: number }>>([]);
   const inFlightCountRef = useRef(0);
   const startRecordingRef = useRef<(() => Promise<void>) | null>(null);
-
-  useEffect(() => {
-    transcriptRef.current = transcript;
-  }, [transcript]);
+  const restartRecorderSessionRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     isRecordingRef.current = isRecording;
@@ -276,6 +247,13 @@ export function useAudio({
     if (noticeTimeoutRef.current !== null) {
       window.clearTimeout(noticeTimeoutRef.current);
       noticeTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearChunkCycleTimer = useCallback(() => {
+    if (chunkCycleTimeoutRef.current !== null) {
+      window.clearTimeout(chunkCycleTimeoutRef.current);
+      chunkCycleTimeoutRef.current = null;
     }
   }, []);
 
@@ -325,6 +303,8 @@ export function useAudio({
     }) => {
       clearDurationInterval();
       stopVadLoop();
+      clearChunkCycleTimer();
+      isChunkRolloverRef.current = false;
 
       if (mediaRecorderRef.current) {
         mediaRecorderRef.current.ondataavailable = null;
@@ -364,7 +344,6 @@ export function useAudio({
       audioContextRef.current = null;
       lastSliceTimestampRef.current = null;
       vadFramesRef.current = [];
-      sliceHistoryRef.current = [];
       setIsSpeaking(false);
 
       if (!preserveDuration) {
@@ -376,51 +355,110 @@ export function useAudio({
         setIsRecording(false);
       }
     },
-    [clearDurationInterval, stopVadLoop],
+    [clearChunkCycleTimer, clearDurationInterval, stopVadLoop],
   );
 
   const rebuildTranscript = useCallback(() => {
-    const nextTranscript: TranscriptChunk[] = [];
+    const nextCommittedTranscript: TranscriptChunk[] = [];
     const windows = completedWindowsRef.current;
+    let committedText = "";
+    let pendingTail = "";
+    let pendingTailStartedAtMs: number | null = null;
+    let pendingTailTimestamp = windows[0]?.timestamp ?? new Date();
 
-    for (let i = 0; i < windows.length; i++) {
-      const completedWindow = windows[i];
-      const previousWindow = i > 0 ? windows[i - 1] : undefined;
+    for (const completedWindow of windows) {
+      const incomingWindowText = completedWindow.rawText.trim();
 
-      // Skip windows whose entire range is already covered by the previous
-      // window (full overlap).
-      if (
-        previousWindow?.endMs !== undefined &&
-        completedWindow.startMs !== undefined &&
-        completedWindow.endMs !== undefined &&
-        completedWindow.endMs <= previousWindow.endMs
-      ) {
+      if (!incomingWindowText) {
         continue;
       }
 
-      const dedupedText = stitchByTimestamp(
-        completedWindow.rawText,
-        previousWindow?.endMs,
-        completedWindow.startMs,
-      );
+      const candidateText = joinTranscriptText([pendingTail, incomingWindowText]);
+      const dedupedText = dedupeOverlap(committedText.slice(-300), candidateText).trim();
 
       if (!dedupedText) {
         continue;
       }
 
-      nextTranscript.push({
-        id: completedWindow.id,
-        speaker: "Meeting",
-        text: dedupedText,
-        timestamp: completedWindow.timestamp,
-      });
+      const shouldFlushPending =
+        pendingTailStartedAtMs !== null &&
+        completedWindow.timestamp.getTime() - pendingTailStartedAtMs >= PENDING_TAIL_FLUSH_AFTER_MS;
+      const endsWithTerminalPunctuation = TERMINAL_PUNCTUATION_PATTERN.test(dedupedText);
+      const dedupedWords = splitTranscriptWords(dedupedText);
+      const shouldForceCommitPendingWords =
+        dedupedWords.length > PENDING_TAIL_WORD_SAFETY_LIMIT;
+
+      if (!pendingTail) {
+        pendingTailTimestamp = completedWindow.timestamp;
+      }
+
+      if (shouldForceCommitPendingWords) {
+        const committedPrefix = dedupedWords
+          .slice(0, PENDING_TAIL_WORD_COMMIT_COUNT)
+          .join(" ")
+          .trim();
+        const remainingPendingTail = dedupedWords
+          .slice(PENDING_TAIL_WORD_COMMIT_COUNT)
+          .join(" ")
+          .trim();
+
+        if (committedPrefix) {
+          nextCommittedTranscript.push({
+            id: `${completedWindow.id}-forced-prefix`,
+            speaker: "Meeting",
+            text: committedPrefix,
+            timestamp: pendingTail ? pendingTailTimestamp : completedWindow.timestamp,
+          });
+          committedText = joinTranscriptText([committedText, committedPrefix]);
+        }
+
+        pendingTail = remainingPendingTail;
+        pendingTailStartedAtMs = pendingTail ? completedWindow.timestamp.getTime() : null;
+        pendingTailTimestamp = completedWindow.timestamp;
+      } else if (endsWithTerminalPunctuation || shouldFlushPending) {
+        const committedChunk: TranscriptChunk = {
+          id: completedWindow.id,
+          speaker: "Meeting",
+          text: dedupedText,
+          timestamp: pendingTail ? pendingTailTimestamp : completedWindow.timestamp,
+        };
+
+        nextCommittedTranscript.push(committedChunk);
+        committedText = joinTranscriptText([committedText, dedupedText]);
+        pendingTail = "";
+        pendingTailStartedAtMs = null;
+        pendingTailTimestamp = completedWindow.timestamp;
+      } else {
+        pendingTail = dedupedText;
+
+        if (pendingTailStartedAtMs === null) {
+          pendingTailStartedAtMs = completedWindow.timestamp.getTime();
+          pendingTailTimestamp = completedWindow.timestamp;
+        }
+      }
     }
 
-    replaceTranscript(nextTranscript);
-    transcriptRef.current = nextTranscript;
+    const nextLiveTranscript = pendingTail
+      ? [
+          ...nextCommittedTranscript,
+          {
+            id: `pending-tail-${completedWindowsRef.current.length}`,
+            speaker: "Meeting",
+            text: pendingTail,
+            timestamp: pendingTailTimestamp,
+          },
+        ]
+      : nextCommittedTranscript;
 
-    return nextTranscript;
-  }, [replaceTranscript]);
+    replaceCommittedTranscript(nextCommittedTranscript);
+    replaceTranscript(nextLiveTranscript);
+    lastTranscriptTailRef.current = buildTranscriptText(nextLiveTranscript).slice(-MAX_TRANSCRIPT_TAIL_CHARS);
+
+    return {
+      committedTranscript: nextCommittedTranscript,
+      liveTranscript: nextLiveTranscript,
+    };
+  }, [replaceCommittedTranscript, replaceTranscript]);
 
   const appendCompletedWindow = useCallback(
     (completedWindow: CompletedTranscriptionWindow) => {
@@ -438,7 +476,9 @@ export function useAudio({
       completedWindowsRef.current = nextCompletedWindows;
 
       const rebuiltTranscript = rebuildTranscript();
-      const insertedChunk = rebuiltTranscript.find((chunk) => chunk.id === completedWindow.id);
+      const insertedChunk = rebuiltTranscript.liveTranscript.find(
+        (chunk) => chunk.id === completedWindow.id,
+      );
 
       if (insertedChunk) {
         onTranscript?.(insertedChunk);
@@ -464,8 +504,8 @@ export function useAudio({
       void (async () => {
         const completeTelemetry = startTelemetryMeasurement("transcription_round_trip", {
           attempt: nextWindow.attempt + 1,
-          overlap_ms: TRANSCRIPTION_OVERLAP_MS,
-          window_ms: TRANSCRIPTION_WINDOW_MS,
+          strategy: "single-slice-with-tail-prompt",
+          window_ms: MEDIA_RECORDER_TIMESLICE_MS,
         });
         const abortController = new AbortController();
         const abortTimeoutId = window.setTimeout(() => {
@@ -476,8 +516,8 @@ export function useAudio({
           const formData = new FormData();
 
           formData.append("audio", nextWindow.audioBlob, "window.webm");
-          if (nextWindow.promptHint) {
-            formData.append("prompt", nextWindow.promptHint);
+          if (nextWindow.previousTail) {
+            formData.append("previous_tail", nextWindow.previousTail);
           }
 
           const response = await fetch("/api/transcribe", {
@@ -507,8 +547,8 @@ export function useAudio({
               rawText: transcriptText,
               timestamp:
                 Number.isNaN(parsedTimestamp.getTime()) ? nextWindow.timestamp : parsedTimestamp,
-              startMs: payload.startMs,
-              endMs: payload.endMs,
+              startMs: nextWindow.startTimestampMs,
+              endMs: nextWindow.endTimestampMs,
             });
           }
 
@@ -540,34 +580,32 @@ export function useAudio({
   }, [appendCompletedWindow, groqApiKey, showNotice, updateTranscriptionActivityState]);
 
   const enqueueTranscriptionWindow = useCallback(
-    (slices: AudioSlice[]) => {
-      if (slices.length === 0) {
+    (slice: AudioSlice) => {
+      if (!slice.blob || slice.blob.size === 0) {
         return;
       }
 
-      const windowStartTimestampMs = slices[0].startTimestampMs;
-      const windowEndTimestampMs = slices[slices.length - 1].endTimestampMs;
-      const speechRatio = getSpeechRatio(
-        vadFramesRef.current,
-        windowEndTimestampMs - VAD_WINDOW_MS,
-        vadThreshold,
+      const windowFrames = vadFramesRef.current.filter(
+        (frame) =>
+          frame.timestampMs >= Math.max(slice.startTimestampMs, slice.endTimestampMs - VAD_WINDOW_MS) &&
+          frame.timestampMs <= slice.endTimestampMs,
       );
+      const speechRatio = getSpeechRatio(windowFrames, slice.startTimestampMs, vadThreshold);
 
       if (speechRatio < MIN_SPEECH_RATIO) {
         return;
       }
 
-      const windowBlob = new Blob(slices.map((slice) => slice.blob), {
-        type: slices[0].blob.type || "audio/webm",
-      });
-      const windowTimestamp = new Date(windowStartTimestampMs);
+      const windowTimestamp = new Date(slice.startTimestampMs);
 
-      onAudioChunk?.(windowBlob, windowTimestamp);
+      onAudioChunk?.(slice.blob, windowTimestamp);
       pendingWindowsRef.current.push({
         attempt: 0,
-        audioBlob: windowBlob,
+        audioBlob: slice.blob,
+        endTimestampMs: slice.endTimestampMs,
         generation: transcriptGenerationRef.current,
-        promptHint: getTranscriptTailPrompt(transcriptRef.current),
+        previousTail: lastTranscriptTailRef.current,
+        startTimestampMs: slice.startTimestampMs,
         timestamp: windowTimestamp,
         windowId: uuidv4(),
       });
@@ -579,46 +617,51 @@ export function useAudio({
 
   const handleAudioSlice = useCallback(
     (audioBlob: Blob) => {
+      // CHUNK_OVERLAP_STRATEGY: each upload comes from a fresh MediaRecorder
+      // segment, not a long-running timeslice stream, so every blob is a
+      // self-contained webm/opus file. Continuity comes from previous_tail plus
+      // transcript-level overlap dedupe rather than re-sending prior fragments.
       const now = Date.now();
-      const previousSliceTimestamp = lastSliceTimestampRef.current ?? now - MEDIA_RECORDER_TIMESLICE_MS;
-      const nextSlice: AudioSlice = {
+      const previousSliceTimestamp =
+        lastSliceTimestampRef.current ?? now - MEDIA_RECORDER_TIMESLICE_MS;
+      const currentChunk: AudioSlice = {
         blob: audioBlob,
         endTimestampMs: now,
         startTimestampMs: previousSliceTimestamp,
       };
 
       lastSliceTimestampRef.current = now;
-      sliceHistoryRef.current.push(nextSlice);
-
-      if (sliceHistoryRef.current.length > MAX_WINDOW_HISTORY_SLICES) {
-        sliceHistoryRef.current = sliceHistoryRef.current.slice(-MAX_WINDOW_HISTORY_SLICES);
-      }
-
-      const sliceCount = sliceHistoryRef.current.length;
-
-      // Fix 2: Early-fire path — send the first transcription after ~5s
-      // instead of waiting for the full 15s window.
-      if (
-        completedWindowsRef.current.length === 0 &&
-        pendingWindowsRef.current.length === 0 &&
-        inFlightCountRef.current === 0 &&
-        sliceCount >= EARLY_FIRE_SLICES &&
-        sliceCount < TRANSCRIPTION_WINDOW_SLICES
-      ) {
-        enqueueTranscriptionWindow(sliceHistoryRef.current.slice());
-      }
-
-      if (
-        sliceCount >= TRANSCRIPTION_WINDOW_SLICES &&
-        (sliceCount - TRANSCRIPTION_WINDOW_SLICES) % TRANSCRIPTION_STEP_SLICES === 0
-      ) {
-        const windowStartIndex = sliceCount - TRANSCRIPTION_WINDOW_SLICES;
-        const windowSlices = sliceHistoryRef.current.slice(windowStartIndex);
-
-        enqueueTranscriptionWindow(windowSlices);
-      }
+      enqueueTranscriptionWindow(currentChunk);
     },
     [enqueueTranscriptionWindow],
+  );
+
+  const scheduleChunkFlush = useCallback(
+    (mediaRecorder: MediaRecorder) => {
+      clearChunkCycleTimer();
+
+      chunkCycleTimeoutRef.current = window.setTimeout(() => {
+        if (
+          !shouldKeepRecordingRef.current ||
+          isRestartingRecorderRef.current ||
+          mediaRecorder.state !== "recording"
+        ) {
+          chunkCycleTimeoutRef.current = null;
+          return;
+        }
+
+        isChunkRolloverRef.current = true;
+        chunkCycleTimeoutRef.current = null;
+
+        try {
+          mediaRecorder.stop();
+        } catch {
+          isChunkRolloverRef.current = false;
+          void restartRecorderSessionRef.current?.();
+        }
+      }, chunkDurationMs);
+    },
+    [chunkDurationMs, clearChunkCycleTimer],
   );
 
   const restartRecorderSession = useCallback(async () => {
@@ -789,6 +832,19 @@ export function useAudio({
       };
 
       mediaRecorder.onstop = () => {
+        if (shouldKeepRecordingRef.current && isChunkRolloverRef.current) {
+          isChunkRolloverRef.current = false;
+
+          try {
+            mediaRecorder.start();
+            scheduleChunkFlush(mediaRecorder);
+          } catch {
+            void restartRecorderSession();
+          }
+
+          return;
+        }
+
         if (!shouldKeepRecordingRef.current) {
           releaseCaptureResources({
             preserveDuration: false,
@@ -828,7 +884,8 @@ export function useAudio({
         setIsSpeaking(rms > vadThreshold);
       }, VAD_FRAME_INTERVAL_MS);
 
-      mediaRecorder.start(chunkDurationMs);
+      mediaRecorder.start();
+      scheduleChunkFlush(mediaRecorder);
       setIsRecording(true);
       setRecordingDurationMs(Date.now() - startedAt);
     } catch (errorValue) {
@@ -853,24 +910,70 @@ export function useAudio({
 
       setError("Unable to start microphone recording in this browser session.");
     }
-  }, [chunkDurationMs, handleAudioSlice, releaseCaptureResources, restartRecorderSession, vadThreshold]);
+  }, [handleAudioSlice, releaseCaptureResources, restartRecorderSession, scheduleChunkFlush, vadThreshold]);
 
   useEffect(() => {
     startRecordingRef.current = startRecording;
   }, [startRecording]);
 
+  useEffect(() => {
+    restartRecorderSessionRef.current = restartRecorderSession;
+  }, [restartRecorderSession]);
+
+  const flushPendingChunk = useCallback(async () => {
+    const mediaRecorder = mediaRecorderRef.current;
+
+    if (!mediaRecorder || mediaRecorder.state !== "recording") {
+      return;
+    }
+
+    isChunkRolloverRef.current = true;
+
+    try {
+      mediaRecorder.stop();
+    } catch {
+      isChunkRolloverRef.current = false;
+      return;
+    }
+
+    const FLUSH_TIMEOUT_MS = 2500;
+    const POLL_INTERVAL_MS = 80;
+    const deadline = Date.now() + FLUSH_TIMEOUT_MS;
+
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const idle =
+          inFlightCountRef.current === 0 && pendingWindowsRef.current.length === 0;
+
+        if (idle || Date.now() >= deadline) {
+          if (Date.now() >= deadline) {
+            console.warn("[TwinMind][audio][flush] timed out waiting for transcription to settle");
+          }
+          resolve();
+          return;
+        }
+
+        window.setTimeout(check, POLL_INTERVAL_MS);
+      };
+
+      check();
+    });
+  }, []);
+
   const clearTranscript = useCallback(() => {
     transcriptGenerationRef.current += 1;
     pendingWindowsRef.current = [];
     completedWindowsRef.current = [];
-    transcriptRef.current = [];
+    lastTranscriptTailRef.current = "";
     updateTranscriptionActivityState();
     baseClearTranscript();
   }, [baseClearTranscript, updateTranscriptionActivityState]);
 
   return {
     clearTranscript,
+    committedTranscript,
     error,
+    flushPendingChunk,
     isRecording,
     isSpeaking,
     isTranscribing,

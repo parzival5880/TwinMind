@@ -13,11 +13,13 @@ import { ToastViewport } from "@/components/ToastViewport";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { useAudio } from "@/hooks/useAudio";
 import { useChat } from "@/hooks/useChat";
+import { useMeetingClassifier } from "@/hooks/useMeetingClassifier";
 import { useRollingSummary } from "@/hooks/useRollingSummary";
+import { useSalienceStore } from "@/hooks/useSalienceStore";
 import { useSettings } from "@/hooks/useSettings";
 import { useSuggestions } from "@/hooks/useSuggestions";
 import { useToastQueue } from "@/hooks/useToastQueue";
-import type { Suggestion } from "@/lib/types";
+import type { RollingSummary, SalientMoment, Suggestion, SuggestionMeta } from "@/lib/types";
 
 type MobileTab = "transcript" | "suggestions" | "chat";
 type TranscriptJumpTarget = {
@@ -60,7 +62,9 @@ export default function HomePage() {
   } = useSettings();
   const {
     clearTranscript,
+    committedTranscript,
     error,
+    flushPendingChunk,
     isRecording,
     isSpeaking,
     isTranscribing,
@@ -72,6 +76,7 @@ export default function HomePage() {
   } = useAudio({
     groqApiKey: settings.groq_api_key,
   });
+  const [isRefreshingTranscript, setIsRefreshingTranscript] = useState(false);
   const {
     cancelSuggestions,
     error: suggestionsError,
@@ -100,11 +105,25 @@ export default function HomePage() {
   const { resetSummary, rollingSummary } = useRollingSummary({
     enabled: isRecording,
     groqApiKey: settings.groq_api_key,
-    transcript,
+    transcript: committedTranscript,
+  });
+  const { classifiedType } = useMeetingClassifier({
+    enabled: isRecording,
+    groqApiKey: settings.groq_api_key,
+    recordingDurationMs,
+    transcript: committedTranscript,
+  });
+  const { moments: salientMoments, reset: resetSalience } = useSalienceStore({
+    chunks: committedTranscript,
+    isRecording,
+    apiKey: settings.groq_api_key,
   });
   const transcriptSignature = useMemo(
-    () => transcript.map((chunk) => `${chunk.timestamp.toISOString()}::${chunk.text}`).join("\n"),
-    [transcript],
+    () =>
+      committedTranscript
+        .map((chunk) => `${chunk.timestamp.toISOString()}::${chunk.text}`)
+        .join("\n"),
+    [committedTranscript],
   );
   const recentChatTopics = useMemo(() => {
     // Surface the last few user messages as "current chat focus" so the
@@ -125,11 +144,14 @@ export default function HomePage() {
       .map((content, index) => `${index + 1}. ${content}`)
       .join("\n");
   }, [messages]);
+  const latestSuggestionMeta = useMemo(() => suggestions[0]?.meta, [suggestions]);
   const lastGeneratedSignatureRef = useRef("");
   const transcriptSignatureRef = useRef(transcriptSignature);
   const isRecordingRef = useRef(isRecording);
-  const rollingSummaryRef = useRef(rollingSummary);
+  const rollingSummaryRef = useRef<RollingSummary | null>(rollingSummary);
   const recentChatTopicsRef = useRef(recentChatTopics);
+  const salientMemoryRef = useRef<SalientMoment[]>([]);
+  const latestSuggestionMetaRef = useRef<SuggestionMeta | undefined>(latestSuggestionMeta);
   const silenceTimeoutRef = useRef<number | null>(null);
   const silenceResetTimeoutRef = useRef<number | null>(null);
   const lastAudioErrorRef = useRef<string | null>(null);
@@ -166,6 +188,14 @@ export default function HomePage() {
   useEffect(() => {
     recentChatTopicsRef.current = recentChatTopics;
   }, [recentChatTopics]);
+
+  useEffect(() => {
+    salientMemoryRef.current = salientMoments;
+  }, [salientMoments]);
+
+  useEffect(() => {
+    latestSuggestionMetaRef.current = latestSuggestionMeta;
+  }, [latestSuggestionMeta]);
 
   useEffect(() => {
     const scheduleWaitingReset = () => {
@@ -219,10 +249,13 @@ export default function HomePage() {
   const handleGenerateSuggestions = useCallback(
     async (source: "auto" | "manual" = "manual") => {
       const batch = await generateSuggestions(
-        transcript,
+        committedTranscript,
         {
           rollingSummary: rollingSummaryRef.current,
           recentChatTopics: recentChatTopicsRef.current,
+          salientMemory: salientMemoryRef.current,
+          meetingType: latestSuggestionMetaRef.current?.meeting_type ?? classifiedType ?? "default",
+          conversationStage: latestSuggestionMetaRef.current?.conversation_stage ?? "unclear",
         },
         {
           replacePending: source === "manual",
@@ -234,7 +267,21 @@ export default function HomePage() {
         lastGeneratedSignatureRef.current = transcriptSignature;
       }
     },
-    [generateSuggestions, transcript, transcriptSignature],
+    [classifiedType, committedTranscript, generateSuggestions, transcriptSignature],
+  );
+  const handleGenerateSuggestionsRef = useRef(handleGenerateSuggestions);
+
+  useEffect(() => {
+    handleGenerateSuggestionsRef.current = handleGenerateSuggestions;
+  }, [handleGenerateSuggestions]);
+
+  const buildChatContextOptions = useCallback(
+    (meta?: SuggestionMeta) => ({
+      rollingSummary: rollingSummaryRef.current,
+      salientMemory: salientMemoryRef.current,
+      suggestionMeta: meta ?? latestSuggestionMetaRef.current,
+    }),
+    [],
   );
 
   useEffect(() => {
@@ -255,7 +302,7 @@ export default function HomePage() {
         return;
       }
 
-      void handleGenerateSuggestions("auto");
+      void handleGenerateSuggestionsRef.current("auto");
     };
 
     let intervalId: number | null = null;
@@ -272,12 +319,20 @@ export default function HomePage() {
         window.clearInterval(intervalId);
       }
     };
-  }, [cancelSuggestions, handleGenerateSuggestions, isRecording]);
+  }, [cancelSuggestions, isRecording]);
 
-  const handleManualRefresh = useCallback(() => {
+  const handleManualRefresh = useCallback(async () => {
     cancelSuggestions();
+    if (isRecording) {
+      setIsRefreshingTranscript(true);
+      try {
+        await flushPendingChunk();
+      } finally {
+        setIsRefreshingTranscript(false);
+      }
+    }
     void handleGenerateSuggestions("manual");
-  }, [cancelSuggestions, handleGenerateSuggestions]);
+  }, [cancelSuggestions, flushPendingChunk, handleGenerateSuggestions, isRecording]);
 
   const openSettings = useCallback(() => {
     setIsHelpOpen(false);
@@ -297,9 +352,10 @@ export default function HomePage() {
   const handleClearTranscript = useCallback(() => {
     clearTranscript();
     resetSummary();
+    resetSalience();
     lastGeneratedSignatureRef.current = "";
     setShowSettingsRestartBanner(false);
-  }, [clearTranscript, resetSummary]);
+  }, [clearTranscript, resetSalience, resetSummary]);
 
   const handleSaveSettings = useCallback(
     async (nextSettings: typeof settings) => {
@@ -562,7 +618,7 @@ export default function HomePage() {
 
       if (normalizedKey === "r") {
         event.preventDefault();
-        handleManualRefresh();
+        void handleManualRefresh();
       }
 
       if (normalizedKey === "m") {
@@ -755,14 +811,19 @@ export default function HomePage() {
             <SuggestionsPanel
               error={suggestionsError}
               isLoading={isSuggestionsLoading}
+              isRefreshingTranscript={isRefreshingTranscript}
               onCopySuggestion={(suggestion) => {
                 void handleCopySuggestion(suggestion);
               }}
               onDismissSuggestion={handleDismissSuggestion}
               onOpenSettings={openSettings}
               onRefresh={handleManualRefresh}
-              onSuggestionSelected={(suggestion) => {
-                void addSuggestionAsMessage(suggestion, transcript);
+              onSuggestionSelected={(suggestion, meta) => {
+                void addSuggestionAsMessage(
+                  suggestion,
+                  committedTranscript,
+                  buildChatContextOptions(meta),
+                );
               }}
               suggestionBatches={suggestions}
             />
@@ -776,9 +837,13 @@ export default function HomePage() {
               messages={messages}
               onJumpToTimestamp={handleJumpToTimestamp}
               onOpenSettings={openSettings}
-              onRetryMessage={retryMessage}
-              onSendMessage={sendMessage}
-              transcript={transcript}
+              onRetryMessage={(messageId, currentTranscript) => {
+                void retryMessage(messageId, currentTranscript, buildChatContextOptions());
+              }}
+              onSendMessage={(message, currentTranscript) => {
+                void sendMessage(message, currentTranscript, buildChatContextOptions());
+              }}
+              transcript={committedTranscript}
             />
           </div>
         </section>
@@ -809,14 +874,19 @@ export default function HomePage() {
             <SuggestionsPanel
               error={suggestionsError}
               isLoading={isSuggestionsLoading}
+              isRefreshingTranscript={isRefreshingTranscript}
               onCopySuggestion={(suggestion) => {
                 void handleCopySuggestion(suggestion);
               }}
               onDismissSuggestion={handleDismissSuggestion}
               onOpenSettings={openSettings}
               onRefresh={handleManualRefresh}
-              onSuggestionSelected={(suggestion) => {
-                void addSuggestionAsMessage(suggestion, transcript);
+              onSuggestionSelected={(suggestion, meta) => {
+                void addSuggestionAsMessage(
+                  suggestion,
+                  committedTranscript,
+                  buildChatContextOptions(meta),
+                );
               }}
               suggestionBatches={suggestions}
             />
@@ -830,9 +900,13 @@ export default function HomePage() {
               messages={messages}
               onJumpToTimestamp={handleJumpToTimestamp}
               onOpenSettings={openSettings}
-              onRetryMessage={retryMessage}
-              onSendMessage={sendMessage}
-              transcript={transcript}
+              onRetryMessage={(messageId, currentTranscript) => {
+                void retryMessage(messageId, currentTranscript, buildChatContextOptions());
+              }}
+              onSendMessage={(message, currentTranscript) => {
+                void sendMessage(message, currentTranscript, buildChatContextOptions());
+              }}
+              transcript={committedTranscript}
             />
           ) : null}
         </section>

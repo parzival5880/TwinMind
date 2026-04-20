@@ -1,77 +1,97 @@
-import Groq from "groq-sdk";
 import { getGroqClient } from "@/lib/groq-client";
-import type { TranscriptChunk } from "@/lib/types";
+import type { RollingSummary } from "@/lib/types";
 
-// Summary is generated with a smaller, much faster Groq model. The goal is not
-// eloquence — it is a compact semantic memory that preserves facts and open
-// questions so the 120B suggestion model can focus its context budget on the
-// verbatim recent window.
 const SUMMARY_MODEL = "llama-3.1-8b-instant";
 const SUMMARY_TIMEOUT_MS = 15_000;
-const SUMMARY_MAX_WORDS = 120;
-const SUMMARY_MAX_TOKENS = 260;
+const SUMMARY_MAX_TOKENS = 300;
+const SUMMARY_INPUT_MAX_CHARS = 4000;
 
-export type SummaryChunkInput = {
-  timestamp: string;
-  text: string;
-  speaker?: string;
-};
+const SUMMARY_PHASES = new Set(["exploring", "converging", "deciding", "wrapping", "unclear"]);
+const SUMMARY_TONES = new Set([
+  "analytical",
+  "tense",
+  "aligned",
+  "stalled",
+  "exploratory",
+  "neutral",
+]);
 
-const buildChunkBlock = (chunks: SummaryChunkInput[]) =>
-  chunks
-    .map((chunk) => {
-      const speakerLabel = chunk.speaker ? `${chunk.speaker}: ` : "";
+const SUMMARY_SYSTEM_PROMPT = `You maintain a rolling narrative summary of a live meeting. Focus on the ARC, not individual facts (facts live elsewhere).
 
-      return `[${chunk.timestamp}] ${speakerLabel}${chunk.text.trim()}`;
-    })
-    .filter((line) => line.trim().length > 0)
-    .join("\n");
+Output ONLY these fields: topic, stance, phase, tone, participants_heard.
+- topic: what the conversation is ABOUT right now (not what's been said — what's the thread)
+- stance: where the group is leaning, if anywhere
+- phase: one of [exploring, converging, deciding, wrapping, unclear]
+- tone: one of [analytical, tense, aligned, stalled, exploratory, neutral]
+- participants_heard: distinct voice labels if discernible (names, roles, or "Speaker 1/2"); empty array if not
 
-const SUMMARY_SYSTEM_PROMPT = `You update a running summary of a live meeting.
+Never invent content. If unclear, use "unclear" for phase and "neutral" for tone.`;
 
-RULES:
-- Preserve: key decisions, open questions, named entities (people, products, vendors, tools), specific numbers, dates, and commitments.
-- Drop: filler, pleasantries, hedging, and restatements.
-- Merge new content into the existing summary — do not append a new section.
-- Stay in third person, present tense, neutral tone.
-- Max ${SUMMARY_MAX_WORDS} words total.
-- Return the updated summary text only. No preamble. No markdown headings.`;
+const rollingSummarySchema = {
+  type: "object",
+  properties: {
+    topic: { type: "string" },
+    stance: { type: "string" },
+    phase: {
+      type: "string",
+      enum: ["exploring", "converging", "deciding", "wrapping", "unclear"],
+    },
+    tone: {
+      type: "string",
+      enum: ["analytical", "tense", "aligned", "stalled", "exploratory", "neutral"],
+    },
+    participants_heard: {
+      type: "array",
+      maxItems: 5,
+      items: { type: "string" },
+    },
+  },
+  required: ["topic", "stance", "phase", "tone", "participants_heard"],
+  additionalProperties: false,
+} as const;
 
-const toSummaryInput = (chunks: TranscriptChunk[]): SummaryChunkInput[] =>
-  chunks.map((chunk) => ({
-    timestamp: chunk.timestamp instanceof Date ? chunk.timestamp.toISOString() : chunk.timestamp,
-    text: chunk.text,
-    speaker: chunk.speaker,
-  }));
+const truncateTranscript = (value: string) => {
+  const normalized = value.trim();
 
-export const updateRollingSummary = async (
-  existingSummary: string,
-  newChunks: TranscriptChunk[] | SummaryChunkInput[],
-): Promise<string> => {
-  if (!newChunks || newChunks.length === 0) {
-    return existingSummary.trim();
+  if (normalized.length <= SUMMARY_INPUT_MAX_CHARS) {
+    return normalized;
   }
 
-  const normalizedChunks: SummaryChunkInput[] =
-    (newChunks as TranscriptChunk[])[0]?.timestamp instanceof Date
-      ? toSummaryInput(newChunks as TranscriptChunk[])
-      : (newChunks as SummaryChunkInput[]);
+  return normalized.slice(-SUMMARY_INPUT_MAX_CHARS);
+};
 
-  const chunkBlock = buildChunkBlock(normalizedChunks);
+const isRollingSummary = (value: unknown): value is RollingSummary => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
 
-  if (chunkBlock.length === 0) {
-    return existingSummary.trim();
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.topic === "string" &&
+    candidate.topic.trim().length > 0 &&
+    typeof candidate.stance === "string" &&
+    candidate.stance.trim().length > 0 &&
+    typeof candidate.phase === "string" &&
+    SUMMARY_PHASES.has(candidate.phase) &&
+    typeof candidate.tone === "string" &&
+    SUMMARY_TONES.has(candidate.tone) &&
+    Array.isArray(candidate.participants_heard) &&
+    candidate.participants_heard.length <= 5 &&
+    candidate.participants_heard.every((participant) => typeof participant === "string")
+  );
+};
+
+export const updateRollingSummary = async (fullTranscript: string): Promise<RollingSummary | null> => {
+  const transcriptBlock = truncateTranscript(fullTranscript);
+
+  if (!transcriptBlock) {
+    return null;
   }
 
   const client = getGroqClient();
-  const trimmedExisting = existingSummary.trim();
-  const userPrompt = `EXISTING SUMMARY:
-${trimmedExisting || "(no prior summary yet)"}
-
-NEW TRANSCRIPT CONTENT TO INCORPORATE:
-${chunkBlock}
-
-Return the single updated summary. No preamble.`;
+  const userPrompt = `FULL RUNNING COMMITTED TRANSCRIPT:
+${transcriptBlock}`;
 
   try {
     const completion = await client.chat.completions.create(
@@ -81,8 +101,8 @@ Return the single updated summary. No preamble.`;
           { role: "system", content: SUMMARY_SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
         ],
-        temperature: 0.2,
-        top_p: 0.9,
+        response_format: { type: "json_object" },
+        temperature: 0.1,
         max_tokens: SUMMARY_MAX_TOKENS,
       },
       {
@@ -91,20 +111,16 @@ Return the single updated summary. No preamble.`;
       },
     );
 
-    const next = completion.choices[0]?.message?.content?.trim();
+    const rawContent = completion.choices[0]?.message?.content;
 
-    if (!next) {
-      return trimmedExisting;
+    if (!rawContent) {
+      return null;
     }
 
-    return next;
-  } catch (error) {
-    // Summary is a best-effort enrichment. If the small model fails, we keep
-    // the prior summary rather than breaking suggestion generation.
-    if (error instanceof Groq.AuthenticationError || error instanceof Groq.PermissionDeniedError) {
-      return trimmedExisting;
-    }
+    const parsed = JSON.parse(rawContent) as unknown;
 
-    return trimmedExisting;
+    return isRollingSummary(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
 };
