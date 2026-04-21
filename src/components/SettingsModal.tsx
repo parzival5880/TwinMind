@@ -58,35 +58,35 @@ export function SettingsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 py-4 backdrop-blur-sm sm:py-8"
+      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center px-4 py-4 sm:py-8"
       onClick={onClose}
     >
       <div
         aria-labelledby="settings-modal-title"
         aria-modal="true"
-        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-[2rem] border border-white/40 bg-[rgba(255,255,255,0.96)] p-6 shadow-[0_30px_80px_rgba(15,23,42,0.2)]"
+        className="modal-shell flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-[14px] p-6"
         role="dialog"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--text-dim)]">
               Settings
             </p>
             <h2
-              className="mt-2 text-2xl font-semibold tracking-tight text-slate-950"
+              className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text)]"
               id="settings-modal-title"
             >
               Copilot prompt configuration
             </h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--text-mid)]">
               Save your Groq key, tune the live prompts, and adjust the transcript context windows
               used for suggestions and answers.
             </p>
           </div>
           <button
             aria-label="Close settings"
-            className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-950 hover:text-slate-950"
+            className="modal-close-btn rounded-full px-4 py-2 text-sm font-semibold transition"
             type="button"
             onClick={onClose}
           >

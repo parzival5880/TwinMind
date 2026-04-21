@@ -6,6 +6,7 @@ import type { SessionState } from "@/lib/types";
 type ExportButtonProps = {
   buttonId?: string;
   className?: string;
+  buttonClassName?: string;
   format?: "json" | "text";
   onExport?: () => void;
   session: SessionState;
@@ -25,6 +26,7 @@ const buildExportFilename = (format: "json" | "text") => {
 export function ExportButton({
   buttonId,
   className,
+  buttonClassName,
   format = "json",
   onExport,
   session,
@@ -45,11 +47,25 @@ export function ExportButton({
         aria-label="Export session"
         data-export-button="true"
         id={buttonId}
-        className="inline-flex items-center justify-center rounded-full border border-slate-300 bg-white/90 px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:-translate-y-0.5 hover:border-teal-700 hover:text-slate-950"
+        className={`inline-flex items-center justify-center rounded-md ${buttonClassName ?? ""}`}
         type="button"
         onClick={handleExport}
       >
-        📥 Export Session
+        <svg
+          aria-hidden="true"
+          className="h-3.5 w-3.5"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.8"
+          viewBox="0 0 24 24"
+        >
+          <path d="M12 3v12" />
+          <path d="m7 10 5 5 5-5" />
+          <path d="M4 20h16" />
+        </svg>
+        <span className="sr-only">Export</span>
       </button>
     </div>
   );

@@ -257,7 +257,7 @@ const LIVE_SUGGESTIONS_PROMPT = `You are a live meeting copilot generating 3 hig
 
 ## Quality bar
 - preview: ≤25 words, MUST be a complete, actionable unit of value on its own. A reader who never clicks must already gain the insight or specific prompt to say. It must name a concrete element from the transcript (a phrase, number, entity, or claim). It must not tease or promise detail that only appears in full_content. full_content exists to add depth, caveats, and phrasing options — NOT to reveal the point.
-- full_content: MUST be between 70 and 140 words. Count your words before outputting. If under 70, add a concrete example or caveat. If over 140, trim the least essential sentence. This is a hard requirement.
+- full_content: MUST be between 70 and 140 words. Count your words before outputting. If under 70, add a concrete example or caveat. If over 140, trim the least essential sentence. This is a hard requirement. full_content extends the preview with: phrasing variants the user could say aloud, one concrete follow-up, and (if using public knowledge in the preview) the specific source or basis for that knowledge (e.g., "Discord engineering blog 2017", "AWS MSK pricing calculator"). full_content must NEVER contradict the preview.
 - evidence_quote: required, ≤10 words copied verbatim from the verbatim recent block.
 - why_relevant: ≤150 chars, explains HOW the evidence_quote supports the preview's claim. Must NOT restate the preview. If you cannot articulate this linkage in 20 words, the suggestion is not grounded — pick a different moment.
 - trigger: 1 sentence naming what in the transcript motivated this suggestion.

@@ -16,24 +16,28 @@ const toneClassNames: Record<
   }
 > = {
   info: {
-    action: "border-sky-300/70 text-sky-700 hover:border-sky-500 hover:bg-sky-50",
-    panel: "border-sky-200 bg-sky-50/95 text-sky-900",
-    pill: "bg-sky-100 text-sky-700",
+    action:
+      "border-[rgba(94,234,212,.22)] text-[var(--teal)] hover:border-[rgba(94,234,212,.36)] hover:bg-[rgba(94,234,212,.08)]",
+    panel: "text-[var(--text)]",
+    pill: "bg-[rgba(94,234,212,.12)] text-[var(--teal)]",
   },
   warning: {
-    action: "border-amber-300/70 text-amber-700 hover:border-amber-500 hover:bg-amber-50",
-    panel: "border-amber-200 bg-amber-50/95 text-amber-900",
-    pill: "bg-amber-100 text-amber-700",
+    action:
+      "border-[rgba(245,185,113,.22)] text-[var(--amber)] hover:border-[rgba(245,185,113,.36)] hover:bg-[rgba(245,185,113,.08)]",
+    panel: "text-[var(--text)]",
+    pill: "bg-[rgba(245,185,113,.12)] text-[var(--amber)]",
   },
   error: {
-    action: "border-rose-300/70 text-rose-700 hover:border-rose-500 hover:bg-rose-50",
-    panel: "border-rose-200 bg-rose-50/95 text-rose-900",
-    pill: "bg-rose-100 text-rose-700",
+    action:
+      "border-[rgba(248,113,113,.22)] text-[var(--rose)] hover:border-[rgba(248,113,113,.36)] hover:bg-[rgba(248,113,113,.08)]",
+    panel: "text-[var(--text)]",
+    pill: "bg-[rgba(248,113,113,.12)] text-[var(--rose)]",
   },
   success: {
-    action: "border-emerald-300/70 text-emerald-700 hover:border-emerald-500 hover:bg-emerald-50",
-    panel: "border-emerald-200 bg-emerald-50/95 text-emerald-900",
-    pill: "bg-emerald-100 text-emerald-700",
+    action:
+      "border-[rgba(167,139,250,.22)] text-[var(--violet)] hover:border-[rgba(167,139,250,.36)] hover:bg-[rgba(167,139,250,.08)]",
+    panel: "text-[var(--text)]",
+    pill: "bg-[rgba(167,139,250,.12)] text-[var(--violet)]",
   },
 };
 
@@ -42,26 +46,26 @@ export function ToastViewport({ onDismiss, toasts }: ToastViewportProps) {
     <div
       aria-atomic="false"
       aria-live="polite"
-      className="pointer-events-none fixed inset-x-0 top-4 z-[70] mx-auto flex w-full max-w-[1920px] justify-end px-4 sm:px-6"
+      className="pointer-events-none fixed inset-x-0 top-4 z-[70] mx-auto flex w-full justify-end px-4 sm:px-6"
     >
       <div className="flex w-full max-w-md flex-col gap-3">
         {toasts.map((toast) => (
           <article
             key={toast.id}
-            className={`pointer-events-auto animate-toast-in rounded-[1.5rem] border p-4 shadow-[0_18px_50px_rgba(15,23,42,0.16)] backdrop-blur ${toneClassNames[toast.tone].panel}`}
+            className={`toast-panel pointer-events-auto animate-toast-in p-4 ${toneClassNames[toast.tone].panel}`}
             role={toast.tone === "error" ? "alert" : "status"}
           >
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <span
-                  className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${toneClassNames[toast.tone].pill}`}
+                  className={`toast-tone-pill inline-flex ${toneClassNames[toast.tone].pill}`}
                 >
                   {toast.tone}
                 </span>
                 {toast.title ? (
                   <p className="mt-3 text-sm font-semibold text-current">{toast.title}</p>
                 ) : null}
-                <p className="mt-2 text-sm leading-6 text-current">{toast.message}</p>
+                <p className="mt-2 text-sm leading-6 text-[var(--text-mid)]">{toast.message}</p>
                 {toast.action ? (
                   <button
                     className={`mt-3 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${toneClassNames[toast.tone].action}`}
@@ -77,7 +81,7 @@ export function ToastViewport({ onDismiss, toasts }: ToastViewportProps) {
               </div>
               <button
                 aria-label="Dismiss toast"
-                className="rounded-full border border-current/15 px-2 py-1 text-xs font-semibold text-current/80 transition hover:bg-white/40 hover:text-current"
+                className="rounded-full border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[var(--text-dim)] transition hover:bg-[var(--surface)] hover:text-[var(--text)]"
                 type="button"
                 onClick={() => onDismiss(toast.id)}
               >

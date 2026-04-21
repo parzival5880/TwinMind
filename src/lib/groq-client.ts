@@ -463,7 +463,7 @@ const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string)
     let normalizedFullContent = suggestion.full_content.trim();
     let fullContentWordCount = countWords(normalizedFullContent);
 
-    if (fullContentWordCount < 50) {
+    if (fullContentWordCount < 25) {
       console.warn("[TwinMind][suggestions][validator] dropping short full_content", {
         suggestion_id: suggestion.id,
         word_count: fullContentWordCount,
@@ -482,28 +482,37 @@ const validateSuggestions = (suggestions: Suggestion[], verbatimRecent?: string)
     }
 
     // evidence_quote: non-empty, ≤15 words, must appear in verbatim_recent.
-    const quoteText = suggestion.evidence_quote.trim();
+    let quoteText = suggestion.evidence_quote.trim();
 
     if (!quoteText) {
       throw new SuggestionGenerationError("Suggestion evidence_quote must be non-empty.");
     }
 
     if (countWords(quoteText) > 15) {
-      throw new SuggestionGenerationError("Suggestion evidence_quote must be ≤15 words.");
+      // Truncate gracefully instead of dropping the whole batch.
+      quoteText = quoteText.split(/\s+/).slice(0, 15).join(" ");
+      console.warn("[TwinMind][suggestions][validator] truncating long evidence_quote", {
+        suggestion_id: suggestion.id,
+        truncated: quoteText,
+      });
     }
 
     if (normalizedVerbatim && !normalizedVerbatim.includes(quoteText.toLowerCase())) {
       throw new SuggestionGenerationError("Suggestion evidence_quote not found in verbatim_recent.");
     }
 
-    const whyRelevant = suggestion.why_relevant.trim();
+    let whyRelevant = suggestion.why_relevant.trim();
 
     if (!whyRelevant) {
       throw new SuggestionGenerationError("Suggestion why_relevant must be non-empty.");
     }
 
     if (whyRelevant.length > 150) {
-      throw new SuggestionGenerationError("Suggestion why_relevant must be ≤150 characters.");
+      // Truncate at word boundary instead of dropping the whole batch.
+      whyRelevant = whyRelevant.slice(0, 147).replace(/\s+\S*$/, "") + "...";
+      console.warn("[TwinMind][suggestions][validator] truncating long why_relevant", {
+        suggestion_id: suggestion.id,
+      });
     }
 
     const previewTokens = tokenizeSuggestionText(suggestion.preview);

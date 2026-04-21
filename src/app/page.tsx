@@ -29,10 +29,15 @@ type TranscriptJumpTarget = {
 
 const formatRecordingDuration = (durationMs: number) => {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor(totalSeconds / 60);
+  const remainingMinutes = minutes % 60;
   const seconds = totalSeconds % 60;
 
-  return `${String(minutes)}:${String(seconds).padStart(2, "0")}`;
+  return `${String(hours).padStart(2, "0")}:${String(remainingMinutes).padStart(
+    2,
+    "0",
+  )}:${String(seconds).padStart(2, "0")}`;
 };
 
 export default function HomePage() {
@@ -48,7 +53,7 @@ export default function HomePage() {
     null,
   );
   const [showSettingsRestartBanner, setShowSettingsRestartBanner] = useState(false);
-  const [isWaitingForSpeech, setIsWaitingForSpeech] = useState(false);
+  const [, setIsWaitingForSpeech] = useState(false);
   const { pushToast, removeToast, toasts } = useToastQueue();
   const {
     defaultSettings,
@@ -77,6 +82,8 @@ export default function HomePage() {
     groqApiKey: settings.groq_api_key,
   });
   const [isRefreshingTranscript, setIsRefreshingTranscript] = useState(false);
+  const [nextAutoRefreshAt, setNextAutoRefreshAt] = useState<number | null>(null);
+  const [suggestionsCountdown, setSuggestionsCountdown] = useState<number | null>(null);
   const {
     cancelSuggestions,
     error: suggestionsError,
@@ -287,6 +294,7 @@ export default function HomePage() {
   useEffect(() => {
     if (!isRecording) {
       cancelSuggestions();
+      setNextAutoRefreshAt(null);
       return;
     }
 
@@ -306,20 +314,42 @@ export default function HomePage() {
     };
 
     let intervalId: number | null = null;
+    setNextAutoRefreshAt(Date.now() + 28_000);
     const warmupId = window.setTimeout(() => {
       maybeGenerateSuggestions();
+      setNextAutoRefreshAt(Date.now() + 30_000);
       intervalId = window.setInterval(() => {
         maybeGenerateSuggestions();
+        setNextAutoRefreshAt(Date.now() + 30_000);
       }, 30_000);
     }, 28_000);
 
     return () => {
       window.clearTimeout(warmupId);
+      setNextAutoRefreshAt(null);
       if (intervalId !== null) {
         window.clearInterval(intervalId);
       }
     };
   }, [cancelSuggestions, isRecording]);
+
+  useEffect(() => {
+    if (!isRecording || nextAutoRefreshAt === null) {
+      setSuggestionsCountdown(null);
+      return;
+    }
+
+    const updateCountdown = () => {
+      setSuggestionsCountdown(Math.max(0, Math.ceil((nextAutoRefreshAt - Date.now()) / 1000)));
+    };
+
+    updateCountdown();
+    const timerId = window.setInterval(updateCountdown, 1_000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [isRecording, nextAutoRefreshAt]);
 
   const handleManualRefresh = useCallback(async () => {
     cancelSuggestions();
@@ -476,9 +506,9 @@ export default function HomePage() {
     pushToast({
       action: error.toLowerCase().includes("grant mic access")
         ? {
-            label: "Open Settings",
-            onAction: openSettings,
-          }
+          label: "Open Settings",
+          onAction: openSettings,
+        }
         : undefined,
       message: error,
       tone: "error",
@@ -501,13 +531,13 @@ export default function HomePage() {
     pushToast({
       action: suggestionsError.toLowerCase().includes("api key")
         ? {
-            label: "Open Settings",
-            onAction: openSettings,
-          }
+          label: "Open Settings",
+          onAction: openSettings,
+        }
         : {
-            label: "Retry",
-            onAction: handleManualRefresh,
-          },
+          label: "Retry",
+          onAction: handleManualRefresh,
+        },
       message: suggestionsError,
       tone: "error",
       title: "Suggestions failed",
@@ -529,16 +559,16 @@ export default function HomePage() {
     pushToast({
       action: chatError.toLowerCase().includes("api key")
         ? {
-            label: "Open Settings",
-            onAction: openSettings,
-          }
+          label: "Open Settings",
+          onAction: openSettings,
+        }
         : lastRetryableAssistantId
           ? {
-              label: "Retry",
-              onAction: () => {
-                void retryMessage(lastRetryableAssistantId, transcript);
-              },
-            }
+            label: "Retry",
+            onAction: () => {
+              void retryMessage(lastRetryableAssistantId, transcript);
+            },
+          }
           : undefined,
       message: chatError,
       tone: "error",
@@ -563,14 +593,14 @@ export default function HomePage() {
     pushToast({
       action: normalizedNotice.includes("api key")
         ? {
-            label: "Open Settings",
-            onAction: openSettings,
-          }
+          label: "Open Settings",
+          onAction: openSettings,
+        }
         : normalizedNotice.includes("lagging")
           ? {
-              label: "Refresh Suggestions",
-              onAction: handleManualRefresh,
-            }
+            label: "Refresh Suggestions",
+            onAction: handleManualRefresh,
+          }
           : undefined,
       message: transcriptionNotice,
       tone: normalizedNotice.includes("lagging")
@@ -644,9 +674,9 @@ export default function HomePage() {
   }, [handleManualRefresh, handleStartRecording, stopRecording]);
 
   const mobileTabs = [
-    { id: "transcript" as const, label: `Transcript (${transcript.length})` },
-    { id: "suggestions" as const, label: `Suggestions (${suggestions.length})` },
-    { id: "chat" as const, label: `Chat (${messages.length})` },
+    { id: "transcript" as const, label: "Transcript" },
+    { id: "suggestions" as const, label: "Live Suggestions" },
+    { id: "chat" as const, label: "Chat" },
   ];
   const handleJumpToTimestamp = useCallback((timestamp: string) => {
     setActiveMobileTab("transcript");
@@ -656,128 +686,104 @@ export default function HomePage() {
     });
   }, []);
 
+  const totalSuggestionCount = useMemo(
+    () => suggestions.reduce((total, batch) => total + batch.suggestions.length, 0),
+    [suggestions],
+  );
+  const suggestionsHeaderBadge = `${totalSuggestionCount} ${totalSuggestionCount === 1 ? "card" : "cards"}`;
+
   return (
     <>
       <ToastViewport onDismiss={removeToast} toasts={toasts} />
 
-      <main className="mx-auto flex min-h-screen w-full max-w-[1920px] flex-col px-3 py-3 sm:px-4 sm:py-4 lg:px-6 lg:py-6">
-        <section className="soft-panel sticky top-3 z-40 mb-4 rounded-[2rem] px-4 py-4 sm:px-6">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex items-center gap-4">
-              <Link
-                aria-label="TwinMind home"
-                className="flex items-center gap-3 rounded-[1.5rem] px-1 py-1 hover:bg-white/60"
-                href="/"
-              >
-                <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-sm font-semibold text-white shadow-sm">
-                  TM
-                </span>
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-teal-700">
-                    Meeting Copilot
-                  </p>
-                  <h1 className="text-xl font-semibold tracking-tight text-slate-950 sm:text-2xl">
-                    TwinMind
-                  </h1>
-                </div>
-              </Link>
-            </div>
+      <main className="flex h-screen w-full flex-col overflow-hidden">
+        <header className="app-header">
+          <Link aria-label="TwinMind home" className="header-logo" href="/">
+            <span className="logo-mark">T</span>
+            <span className="logo-name">
+              Twin<span>Mind</span>
+            </span>
+          </Link>
 
-            <div className="flex items-center justify-center xl:flex-1">
-              <div
-                aria-live="polite"
-                className="flex min-w-[220px] items-center justify-center gap-3 rounded-full border border-slate-200 bg-slate-50/90 px-5 py-3 shadow-sm"
-              >
-                <span
-                  aria-hidden="true"
-                  className={`inline-flex h-3.5 w-3.5 rounded-full ${
-                    isRecording && !isWaitingForSpeech
-                      ? "animate-pulse bg-rose-500 shadow-[0_0_0_8px_rgba(244,63,94,0.14)]"
-                      : isRecording
-                        ? "bg-slate-400 shadow-[0_0_0_8px_rgba(148,163,184,0.12)]"
-                        : "bg-slate-300"
-                  }`}
-                />
-                <div className="text-center">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-                    Recording Status
-                  </p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">
-                    {isRecording
-                      ? isWaitingForSpeech
-                        ? "Listening · waiting for speech"
-                        : `Recording · ${formatRecordingDuration(recordingDurationMs)}`
-                      : "Not Recording"}
-                  </p>
-                </div>
-              </div>
+          <div className="header-right">
+            <div aria-live="polite" className={`status-pill ${isRecording ? "" : "idle"}`}>
+              <span aria-hidden="true" className="status-dot" />
+              {isRecording ? "Live Session" : "Idle"}
             </div>
-
-            <div className="flex flex-wrap items-center justify-end gap-3">
-              <button
-                aria-label="Open keyboard shortcuts help"
-                className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-300 bg-white/90 px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:-translate-y-0.5 hover:border-slate-950 hover:text-slate-950"
-                type="button"
-                onClick={() => setIsHelpOpen(true)}
+            <span className="session-time">{formatRecordingDuration(recordingDurationMs)}</span>
+            <button
+              aria-label="Open keyboard shortcuts help"
+              className="header-icon-btn"
+              title="Help"
+              type="button"
+              onClick={() => setIsHelpOpen(true)}
+            >
+              <svg
+                aria-hidden="true"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.9"
+                viewBox="0 0 24 24"
               >
-                ? Help
-              </button>
-              <button
-                aria-label="Open settings modal"
-                className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-300 bg-white/90 px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:-translate-y-0.5 hover:border-slate-950 hover:text-slate-950"
-                type="button"
-                onClick={openSettings}
+                <path d="M9.09 9a3 3 0 1 1 5.82 1c0 2-3 3-3 3" />
+                <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+            <button
+              aria-label="Open settings modal"
+              className="header-icon-btn"
+              title="Settings"
+              type="button"
+              onClick={openSettings}
+            >
+              <svg
+                aria-hidden="true"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+                viewBox="0 0 24 24"
               >
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.8"
-                  viewBox="0 0 24 24"
-                >
-                  <path d="M12 3.75a2.25 2.25 0 0 1 2.18 1.68l.18.7a2.25 2.25 0 0 0 2.72 1.59l.71-.17a2.25 2.25 0 0 1 2.63 3.03l-.29.68a2.25 2.25 0 0 0 .66 2.94l.59.43a2.25 2.25 0 0 1 0 3.64l-.59.43a2.25 2.25 0 0 0-.66 2.94l.29.68a2.25 2.25 0 0 1-2.63 3.03l-.71-.17a2.25 2.25 0 0 0-2.72 1.59l-.18.7a2.25 2.25 0 0 1-4.36 0l-.18-.7a2.25 2.25 0 0 0-2.72-1.59l-.71.17a2.25 2.25 0 0 1-2.63-3.03l.29-.68a2.25 2.25 0 0 0-.66-2.94l-.59-.43a2.25 2.25 0 0 1 0-3.64l.59-.43a2.25 2.25 0 0 0 .66-2.94l-.29-.68a2.25 2.25 0 0 1 2.63-3.03l.71.17a2.25 2.25 0 0 0 2.72-1.59l.18-.7A2.25 2.25 0 0 1 12 3.75Z" />
+                <path d="M12 3.75a2.25 2.25 0 0 1 2.18 1.68l.18.7a2.25 2.25 0 0 0 2.72 1.59l.71-.17a2.25 2.25 0 0 1 2.63 3.03l-.29.68a2.25 2.25 0 0 0 .66 2.94l.59.43a2.25 2.25 0 0 1 0 3.64l-.59.43a2.25 2.25 0 0 0-.66 2.94l.29.68a2.25 2.25 0 0 1-2.63 3.03l-.71-.17a2.25 2.25 0 0 0-2.72 1.59l-.18.7a2.25 2.25 0 0 1-4.36 0l-.18-.7a2.25 2.25 0 0 0-2.72-1.59l-.71.17a2.25 2.25 0 0 1-2.63-3.03l.29-.68a2.25 2.25 0 0 0-.66-2.94l-.59-.43a2.25 2.25 0 0 1 0-3.64l.59-.43a2.25 2.25 0 0 0 .66-2.94l-.29-.68a2.25 2.25 0 0 1 2.63-3.03l.71.17a2.25 2.25 0 0 0 2.72-1.59l.18-.7A2.25 2.25 0 0 1 12 3.75Z" />
                   <path d="M12 15.75A3.75 3.75 0 1 0 12 8.25a3.75 3.75 0 0 0 0 7.5Z" />
-                </svg>
-                Settings
-              </button>
-              <ExportButton
-                buttonId="export-session-button"
-                className="items-stretch"
-                onExport={() => {
-                  pushToast({
-                    message: "Session exported successfully.",
-                    tone: "success",
-                    title: "Export ready",
-                  });
-                }}
-                session={sessionState}
-              />
-            </div>
+              </svg>
+            </button>
+            <ExportButton
+              buttonId="export-session-button"
+              buttonClassName="header-icon-btn"
+              className="items-stretch"
+              onExport={() => {
+                pushToast({
+                  message: "Session exported successfully.",
+                  tone: "success",
+                  title: "Export ready",
+                });
+              }}
+              session={sessionState}
+            />
           </div>
-        </section>
+        </header>
 
         {showSettingsRestartBanner ? (
-          <div className="mb-4 rounded-[1.5rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <div className="settings-restart-banner">
             Changes will apply to the next transcription.
           </div>
         ) : null}
 
         <nav
           aria-label="Mobile workspace tabs"
-          className="tab-scroller mb-4 flex gap-2 overflow-x-auto md:hidden"
+          className="tab-scroller mobile-tabs"
         >
           {mobileTabs.map((tab) => (
             <button
               key={tab.id}
               aria-pressed={activeMobileTab === tab.id}
-              className={`whitespace-nowrap rounded-full border px-4 py-2 text-sm font-semibold shadow-sm ${
-                activeMobileTab === tab.id
-                  ? "border-slate-950 bg-slate-950 text-white"
-                  : "border-slate-300 bg-white/90 text-slate-700"
-              }`}
+              className={`mobile-tab ${activeMobileTab === tab.id ? "active" : ""}`}
               type="button"
               onClick={() => setActiveMobileTab(tab.id)}
             >
@@ -786,29 +792,57 @@ export default function HomePage() {
           ))}
         </nav>
 
-        <section className="meeting-workspace hidden flex-1 md:grid">
-          <div className="flex min-h-0 flex-col gap-6 md:row-span-2 xl:row-span-1 xl:pr-6">
-            <AudioRecorder
-              error={error}
-              isRecording={isRecording}
-              isSpeaking={isSpeaking}
-              isTranscribing={isTranscribing}
-              recordingDurationMs={recordingDurationMs}
-              onStartRecording={handleStartRecording}
-              onStopRecording={handleStopRecording}
-              transcriptionNotice={transcriptionNotice}
-            />
-            <TranscriptPanel
-              chunks={transcript}
-              error={error}
-              isRecording={isRecording}
-              jumpTarget={transcriptJumpTarget}
-              onClear={handleClearTranscript}
-            />
+        <section className="hidden md:grid" id="cols">
+          <div className="workspace-col">
+            <div className="col-header">
+              <span className="col-title">Transcript</span>
+              <div className="col-header-right">
+                <button className="clear-link-btn" type="button" onClick={handleClearTranscript}>
+                  Clear
+                </button>
+                <span className={`col-badge ${isRecording ? "live" : ""}`}>
+                  {isRecording ? (
+                    <>
+                      <span className="status-dot" />
+                      Live
+                    </>
+                  ) : (
+                    "Idle"
+                  )}
+                </span>
+              </div>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="px-4 pt-4">
+                <AudioRecorder
+                  error={error}
+                  isRecording={isRecording}
+                  isSpeaking={isSpeaking}
+                  isTranscribing={isTranscribing}
+                  recordingDurationMs={recordingDurationMs}
+                  onStartRecording={handleStartRecording}
+                  onStopRecording={handleStopRecording}
+                  transcriptionNotice={transcriptionNotice}
+                />
+              </div>
+              <TranscriptPanel
+                chunks={transcript}
+                error={error}
+                isRecording={isRecording}
+                isSpeaking={isSpeaking}
+                isTranscribing={isTranscribing}
+                jumpTarget={transcriptJumpTarget}
+              />
+            </div>
           </div>
 
-          <div className="min-h-0 md:col-start-2 md:border-l md:border-slate-200 md:pl-6 xl:border-l xl:border-r xl:border-slate-200 xl:px-6">
+          <div className="workspace-col">
+            <div className="col-header">
+              <span className="col-title">Live Suggestions</span>
+              <span className="col-badge">{suggestionsHeaderBadge}</span>
+            </div>
             <SuggestionsPanel
+              countdownSeconds={suggestionsCountdown}
               error={suggestionsError}
               isLoading={isSuggestionsLoading}
               isRefreshingTranscript={isRefreshingTranscript}
@@ -829,7 +863,11 @@ export default function HomePage() {
             />
           </div>
 
-          <div className="min-h-0 md:col-start-2 md:border-l md:border-slate-200 md:pl-6 xl:col-start-auto xl:border-l xl:border-slate-200 xl:pl-6">
+          <div className="workspace-col">
+            <div className="col-header">
+              <span className="col-title">Deep Dive</span>
+              <span className="col-badge">Session only</span>
+            </div>
             <ChatPanel
               error={chatError}
               inputId="chat-input-desktop"
@@ -848,74 +886,106 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="flex flex-1 flex-col gap-4 md:hidden">
-          <AudioRecorder
-            error={error}
-            isRecording={isRecording}
-            isSpeaking={isSpeaking}
-            isTranscribing={isTranscribing}
-            recordingDurationMs={recordingDurationMs}
-            onStartRecording={handleStartRecording}
-            onStopRecording={handleStopRecording}
-            transcriptionNotice={transcriptionNotice}
-          />
+        <section className="mobile-shell min-h-0 flex-1 flex-col">
 
           {activeMobileTab === "transcript" ? (
-            <TranscriptPanel
-              chunks={transcript}
-              error={error}
-              isRecording={isRecording}
-              jumpTarget={transcriptJumpTarget}
-              onClear={handleClearTranscript}
-            />
+            <>
+              <div className="col-header">
+                <span className="col-title">Transcript</span>
+                <div className="col-header-right">
+                  <button className="clear-link-btn" type="button" onClick={handleClearTranscript}>
+                    Clear
+                  </button>
+                  <span className={`col-badge ${isRecording ? "live" : ""}`}>
+                    {isRecording ? (
+                      <>
+                        <span className="status-dot" />
+                        Live
+                      </>
+                    ) : (
+                      "Idle"
+                    )}
+                  </span>
+                </div>
+              </div>
+              <div className="px-4 pt-4">
+                <AudioRecorder
+                  error={error}
+                  isRecording={isRecording}
+                  isSpeaking={isSpeaking}
+                  isTranscribing={isTranscribing}
+                  recordingDurationMs={recordingDurationMs}
+                  onStartRecording={handleStartRecording}
+                  onStopRecording={handleStopRecording}
+                  transcriptionNotice={transcriptionNotice}
+                />
+              </div>
+              <TranscriptPanel
+                chunks={transcript}
+                error={error}
+                isRecording={isRecording}
+                isSpeaking={isSpeaking}
+                isTranscribing={isTranscribing}
+                jumpTarget={transcriptJumpTarget}
+              />
+            </>
           ) : null}
 
           {activeMobileTab === "suggestions" ? (
-            <SuggestionsPanel
-              error={suggestionsError}
-              isLoading={isSuggestionsLoading}
-              isRefreshingTranscript={isRefreshingTranscript}
-              onCopySuggestion={(suggestion) => {
-                void handleCopySuggestion(suggestion);
-              }}
-              onDismissSuggestion={handleDismissSuggestion}
-              onOpenSettings={openSettings}
-              onRefresh={handleManualRefresh}
-              onSuggestionSelected={(suggestion, meta) => {
-                void addSuggestionAsMessage(
-                  suggestion,
-                  committedTranscript,
-                  buildChatContextOptions(meta),
-                );
-              }}
-              suggestionBatches={suggestions}
-            />
+            <>
+              <div className="col-header">
+                <span className="col-title">Live Suggestions</span>
+                <span className="col-badge">{suggestionsHeaderBadge}</span>
+              </div>
+              <SuggestionsPanel
+                countdownSeconds={suggestionsCountdown}
+                error={suggestionsError}
+                isLoading={isSuggestionsLoading}
+                isRefreshingTranscript={isRefreshingTranscript}
+                onCopySuggestion={(suggestion) => {
+                  void handleCopySuggestion(suggestion);
+                }}
+                onDismissSuggestion={handleDismissSuggestion}
+                onOpenSettings={openSettings}
+                onRefresh={handleManualRefresh}
+                onSuggestionSelected={(suggestion, meta) => {
+                  void addSuggestionAsMessage(
+                    suggestion,
+                    committedTranscript,
+                    buildChatContextOptions(meta),
+                  );
+                }}
+                suggestionBatches={suggestions}
+              />
+            </>
           ) : null}
 
           {activeMobileTab === "chat" ? (
-            <ChatPanel
-              error={chatError}
-              inputId="chat-input-mobile"
-              isLoading={isChatLoading}
-              messages={messages}
-              onJumpToTimestamp={handleJumpToTimestamp}
-              onOpenSettings={openSettings}
-              onRetryMessage={(messageId, currentTranscript) => {
-                void retryMessage(messageId, currentTranscript, buildChatContextOptions());
-              }}
-              onSendMessage={(message, currentTranscript) => {
-                void sendMessage(message, currentTranscript, buildChatContextOptions());
-              }}
-              transcript={committedTranscript}
-            />
+            <>
+              <div className="col-header">
+                <span className="col-title">Deep Dive</span>
+                <span className="col-badge">Session only</span>
+              </div>
+              <ChatPanel
+                error={chatError}
+                inputId="chat-input-mobile"
+                isLoading={isChatLoading}
+                messages={messages}
+                onJumpToTimestamp={handleJumpToTimestamp}
+                onOpenSettings={openSettings}
+                onRetryMessage={(messageId, currentTranscript) => {
+                  void retryMessage(messageId, currentTranscript, buildChatContextOptions());
+                }}
+                onSendMessage={(message, currentTranscript) => {
+                  void sendMessage(message, currentTranscript, buildChatContextOptions());
+                }}
+                transcript={committedTranscript}
+              />
+            </>
           ) : null}
         </section>
 
         {isDebugEnabled ? <TelemetryPanel /> : null}
-
-        <footer className="px-1 py-4 text-center text-xs uppercase tracking-[0.16em] text-slate-400">
-          Powered by Groq · gpt-oss-120b · whisper-large-v3
-        </footer>
       </main>
 
       <SettingsModal

@@ -49,34 +49,34 @@ export function HelpModal({ isOpen, onClose }: HelpModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/55 px-4 py-4 backdrop-blur-sm"
+      className="modal-scrim fixed inset-0 z-[65] flex items-center justify-center px-4 py-4"
       onClick={onClose}
     >
       <div
         aria-labelledby="help-modal-title"
         aria-modal="true"
-        className="w-full max-w-2xl rounded-[2rem] border border-white/40 bg-[rgba(255,255,255,0.97)] p-6 shadow-[0_30px_80px_rgba(15,23,42,0.2)]"
+        className="modal-shell w-full max-w-2xl rounded-[14px] p-6"
         role="dialog"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--text-dim)]">
               Help
             </p>
             <h2
-              className="mt-2 text-2xl font-semibold tracking-tight text-slate-950"
+              className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text)]"
               id="help-modal-title"
             >
               Keyboard shortcuts
             </h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
+            <p className="mt-2 text-sm leading-6 text-[var(--text-mid)]">
               Use shortcuts to keep the app feeling fast without breaking your flow.
             </p>
           </div>
           <button
             aria-label="Close help modal"
-            className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-950 hover:text-slate-950"
+            className="modal-close-btn rounded-full px-4 py-2 text-sm font-semibold transition"
             type="button"
             onClick={onClose}
           >
@@ -88,12 +88,12 @@ export function HelpModal({ isOpen, onClose }: HelpModalProps) {
           {shortcuts.map((shortcut) => (
             <article
               key={shortcut.keys}
-              className="flex items-center justify-between gap-4 rounded-[1.25rem] border border-slate-200 bg-slate-50/90 px-4 py-4"
+              className="flex items-center justify-between gap-4 rounded-[12px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4"
             >
               <div>
-                <p className="text-sm font-semibold text-slate-900">{shortcut.description}</p>
+                <p className="text-sm font-semibold text-[var(--text)]">{shortcut.description}</p>
               </div>
-              <kbd className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-slate-700 shadow-sm">
+              <kbd className="rounded-full border border-[var(--border2)] bg-[var(--bg3)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-mid)] shadow-sm">
                 {shortcut.keys}
               </kbd>
             </article>

@@ -1,8 +1,7 @@
 "use client";
 
 import { FormEvent, memo, useEffect, useMemo, useRef, useState } from "react";
-import { format } from "date-fns";
-import type { ChatMessage, TranscriptChunk } from "@/lib/types";
+import type { ChatMessage, Suggestion, TranscriptChunk } from "@/lib/types";
 
 type ChatPanelProps = {
   error: string | null;
@@ -18,6 +17,23 @@ type ChatPanelProps = {
 
 const MAX_MESSAGE_LENGTH = 500;
 const CITATION_PATTERN = /\[(\d{2}:\d{2})\]\s*["“”]([^"“”]+)["“”]/g;
+
+const suggestionTypeLabel = (type: Suggestion["type"]) => {
+  switch (type) {
+    case "question":
+      return "Question to Ask";
+    case "talking_point":
+      return "Talking Point";
+    case "fact_check":
+      return "Fact-Check";
+    case "clarification":
+      return "Clarify";
+    case "answer":
+      return "Answer";
+    default:
+      return null;
+  }
+};
 
 const parseAssistantMessage = (content: string) => {
   const generalKnowledgePrefixPattern =
@@ -57,6 +73,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
   onRetryMessage,
   onSendMessage,
   transcript,
+  userSuggestionLabel,
 }: {
   isLastAssistantMessage: boolean;
   message: ChatMessage;
@@ -64,6 +81,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
   onRetryMessage: (messageId: string, transcript: TranscriptChunk[]) => Promise<void> | void;
   onSendMessage: (message: string, transcript: TranscriptChunk[]) => Promise<void> | void;
   transcript: TranscriptChunk[];
+  userSuggestionLabel?: string | null;
 }) {
   const isAssistant = message.role === "assistant";
   const parsedAssistantMessage = isAssistant ? parseAssistantMessage(message.content) : null;
@@ -74,98 +92,85 @@ const ChatMessageCard = memo(function ChatMessageCard({
     !message.streamError &&
     (parsedAssistantMessage?.followUps.length ?? 0) > 0;
 
-  return (
-    <div className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-      <article
-        className={`max-w-[88%] rounded-[1.5rem] p-4 shadow-sm ${
-          isAssistant
-            ? "bg-slate-950 text-slate-100"
-            : "border border-slate-200 bg-slate-50 text-slate-800"
-        }`}
-      >
-        <div className="mb-2 flex items-center justify-between gap-4">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em]">
-            {message.role === "user" ? "You" : "Assistant"}
-          </p>
-          <p className="text-xs uppercase tracking-[0.16em] opacity-70">
-            {format(message.timestamp, "HH:mm:ss")}
-          </p>
-        </div>
+  if (isAssistant) {
+    return (
+      <article>
+        <div className="chat-row-label">TwinMind</div>
+        <div className="bubble-ai">
+          {parsedAssistantMessage?.usesGeneralKnowledge ? (
+            <p className="mb-2 text-[11px] font-medium text-[var(--amber)]">
+              Not in transcript — based on general knowledge:
+            </p>
+          ) : null}
 
-        {isAssistant ? (
-          <div className="space-y-3">
-            <div className="whitespace-pre-wrap text-sm leading-6">
-              {parsedAssistantMessage?.usesGeneralKnowledge ? (
-                <p className="mb-3 rounded-[1rem] border border-amber-300/25 bg-amber-400/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-amber-100">
-                  Not in transcript — based on general knowledge:
-                </p>
-              ) : null}
-              {parsedAssistantMessage?.body}
-              {message.isStreaming ? (
-                <span
-                  aria-hidden="true"
-                  className="streaming-cursor ml-1 inline-block h-4 w-[2px] bg-teal-300 align-middle"
-                />
-              ) : null}
+          <div className="whitespace-pre-wrap">
+            {parsedAssistantMessage?.body}
+            {message.isStreaming ? <span className="stream-cursor" /> : null}
+          </div>
+
+          {parsedAssistantMessage && parsedAssistantMessage.citations.length > 0 ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {parsedAssistantMessage.citations.map((citation) => (
+                <button
+                  key={`${message.id}-${citation.timestamp}-${citation.quote}`}
+                  className="citation-chip"
+                  type="button"
+                  onClick={() => onJumpToTimestamp(citation.timestamp)}
+                >
+                  [{citation.timestamp}] &quot;{citation.quote}&quot;
+                </button>
+              ))}
             </div>
+          ) : null}
 
-            {parsedAssistantMessage && parsedAssistantMessage.citations.length > 0 ? (
+          {showFollowUps && parsedAssistantMessage ? (
+            <div className="mt-3">
+              <div className="chat-row-label">Consider asking</div>
               <div className="flex flex-wrap gap-2">
-                {parsedAssistantMessage.citations.map((citation) => (
+                {parsedAssistantMessage.followUps.map((followUp) => (
                   <button
-                    key={`${message.id}-${citation.timestamp}-${citation.quote}`}
-                    className="rounded-full border border-teal-700/40 bg-teal-500/10 px-3 py-1 text-xs font-medium text-teal-200 transition hover:border-teal-300 hover:bg-teal-500/20"
+                    key={`${message.id}-${followUp}`}
+                    className="follow-chip"
                     type="button"
-                    onClick={() => onJumpToTimestamp(citation.timestamp)}
+                    onClick={() => {
+                      void onSendMessage(followUp, transcript);
+                    }}
                   >
-                    [{citation.timestamp}] &quot;{citation.quote}&quot;
+                    {followUp}
                   </button>
                 ))}
               </div>
-            ) : null}
+            </div>
+          ) : null}
 
-            {showFollowUps && parsedAssistantMessage ? (
-              <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-300/80">
-                  Consider asking
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {parsedAssistantMessage.followUps.map((followUp) => (
-                    <button
-                      key={`${message.id}-${followUp}`}
-                      className="rounded-full border border-amber-300/35 bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-100 transition hover:border-amber-200 hover:bg-amber-400/20"
-                      type="button"
-                      onClick={() => {
-                        void onSendMessage(followUp, transcript);
-                      }}
-                    >
-                      {followUp}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+          {message.streamError ? (
+            <div className="mt-3">
+              <p className="text-[11px] leading-[1.55] text-[var(--rose)]">
+                {message.errorMessage || "The response stream ended early."}
+              </p>
+              <button
+                className="chat-inline-action mt-1"
+                type="button"
+                onClick={() => {
+                  void onRetryMessage(message.id, transcript);
+                }}
+              >
+                Retry answer
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </article>
+    );
+  }
 
-            {message.streamError ? (
-              <div className="space-y-2 rounded-[1rem] border border-rose-300/30 bg-rose-500/10 p-3">
-                <p className="text-xs leading-5 text-rose-100">
-                  {message.errorMessage || "The response stream ended early."}
-                </p>
-                <button
-                  className="rounded-full border border-rose-200/60 px-3 py-1 text-xs font-semibold text-rose-50 transition hover:border-rose-100 hover:bg-rose-400/15"
-                  type="button"
-                  onClick={() => {
-                    void onRetryMessage(message.id, transcript);
-                  }}
-                >
-                  Retry answer
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
-        )}
+  return (
+    <div className="flex justify-end">
+      <article className="max-w-[88%]">
+        <div className="chat-row-label">
+          {userSuggestionLabel ? `You · ${userSuggestionLabel}` : "You"}
+        </div>
+        <div className="bubble-user">{message.content}</div>
       </article>
     </div>
   );
@@ -175,15 +180,16 @@ export function ChatPanel({
   error,
   inputId = "chat-input",
   isLoading,
-    messages,
-    onJumpToTimestamp,
-    onOpenSettings,
-    onRetryMessage,
-    onSendMessage,
-    transcript,
+  messages,
+  onJumpToTimestamp,
+  onOpenSettings,
+  onRetryMessage,
+  onSendMessage,
+  transcript,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState("");
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastAssistantMessageId = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       if (messages[index].role === "assistant") {
@@ -194,14 +200,29 @@ export function ChatPanel({
     return null;
   }, [messages]);
   const isApiKeyError = error?.toLowerCase().includes("api key") ?? false;
-  const statusLabel = error ? "Error" : isLoading ? "Loading" : messages.length === 0 ? "Idle" : "Success";
-  const statusClassName = error
-    ? "bg-rose-100 text-rose-700"
-    : isLoading
-      ? "bg-sky-100 text-sky-700"
-      : messages.length === 0
-        ? "bg-slate-200 text-slate-700"
-        : "bg-emerald-100 text-emerald-700";
+  const userSuggestionLabels = useMemo(() => {
+    const labelMap = new Map<string, string>();
+
+    messages.forEach((message, index) => {
+      if (message.role !== "user") {
+        return;
+      }
+
+      const nextAssistant = messages
+        .slice(index + 1)
+        .find((candidate) => candidate.role === "assistant");
+      const suggestionType = nextAssistant?.requestSuggestion?.type;
+
+      if (suggestionType && nextAssistant?.requestMessage === message.content) {
+        const label = suggestionTypeLabel(suggestionType);
+        if (label) {
+          labelMap.set(message.id, label);
+        }
+      }
+    });
+
+    return labelMap;
+  }, [messages]);
 
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({
@@ -210,9 +231,16 @@ export function ChatPanel({
     });
   }, [isLoading, messages]);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  useEffect(() => {
+    if (!textareaRef.current) {
+      return;
+    }
 
+    textareaRef.current.style.height = "auto";
+    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+  }, [draft]);
+
+  const submitDraft = () => {
     const trimmedDraft = draft.trim();
 
     if (!trimmedDraft || isLoading) {
@@ -223,99 +251,90 @@ export function ChatPanel({
     setDraft("");
   };
 
-  return (
-    <section
-      aria-label="Chat panel"
-      className="soft-panel flex h-full min-h-0 flex-col rounded-[2rem] p-6"
-    >
-      <div className="mb-5 flex items-center justify-between gap-4">
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Chat</p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-            Detailed answers
-          </h2>
-          <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">
-            Ask a question directly or click a suggestion card to stream a grounded answer with
-            transcript citations.
-          </p>
-        </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-semibold shadow-sm ${statusClassName}`}>
-          {statusLabel}
-        </span>
-      </div>
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    submitDraft();
+  };
 
-      {error ? (
-        <div className="mb-4 rounded-[1.25rem] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          <p>{error}</p>
-          <div className="mt-3 flex flex-wrap gap-2">
+  return (
+    <section aria-label="Chat panel" className="flex h-full min-h-0 flex-col">
+      <div className="col-body col-scroll">
+        <div className="chat-hint">
+          Clicking a suggestion adds it to this chat and streams a detailed answer. You can also
+          type questions directly below.
+        </div>
+
+        {error ? (
+          <div className="mb-3 rounded-[var(--radius)] border border-[rgba(248,113,113,.22)] bg-[rgba(248,113,113,.08)] px-3 py-2 text-[11px] leading-[1.55] text-[var(--rose)]">
+            <p>{error}</p>
             {isApiKeyError && onOpenSettings ? (
-              <button
-                className="rounded-full border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-500 hover:text-rose-800"
-                type="button"
-                onClick={onOpenSettings}
-              >
+              <button className="chat-inline-action mt-1" type="button" onClick={onOpenSettings}>
                 Open Settings
               </button>
             ) : null}
           </div>
-        </div>
-      ) : null}
-
-      <div className="panel-scroll flex-1 space-y-3 overflow-y-auto pr-1">
-        {messages.length === 0 ? (
-          <article className="rounded-[1.25rem] border border-dashed border-slate-300 bg-slate-50/80 p-4">
-            <p className="text-sm leading-6 text-slate-500">
-              Click any suggestion to expand it here, or ask your own question.
-            </p>
-          </article>
         ) : null}
 
-        {messages.map((message) => (
-          <div key={message.id} className="animate-message-in">
+        {messages.length === 0 ? (
+          <div className="text-[12px] leading-[1.6] text-[var(--text-dim)]">
+            No deep-dive thread yet. Click a suggestion card or ask a direct question.
+          </div>
+        ) : null}
+
+        <div className="space-y-0">
+          {messages.map((message) => (
             <ChatMessageCard
+              key={message.id}
               isLastAssistantMessage={lastAssistantMessageId === message.id}
               message={message}
               onJumpToTimestamp={onJumpToTimestamp}
               onRetryMessage={onRetryMessage}
               onSendMessage={onSendMessage}
               transcript={transcript}
+              userSuggestionLabel={userSuggestionLabels.get(message.id)}
             />
-          </div>
-        ))}
-        <div ref={scrollAnchorRef} />
+          ))}
+          <div ref={scrollAnchorRef} />
+        </div>
       </div>
 
-      <form className="mt-5 flex flex-col gap-3" onSubmit={handleSubmit}>
-        <label className="text-sm font-semibold text-slate-700" htmlFor={inputId}>
-          Ask a follow-up
-        </label>
-        <textarea
-          id={inputId}
-          aria-label="Ask a follow-up question"
-          data-chat-input="true"
-          className="min-h-28 rounded-[1.5rem] border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-teal-600 disabled:cursor-not-allowed disabled:bg-slate-50"
-          maxLength={MAX_MESSAGE_LENGTH}
-          name={inputId}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value.slice(0, MAX_MESSAGE_LENGTH))}
-          disabled={isLoading}
-        />
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-            {draft.length}/{MAX_MESSAGE_LENGTH}
-          </p>
-          <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-            {transcript.length} transcript chunks available
-          </p>
+      <form className="chat-footer" onSubmit={handleSubmit}>
+        <div className="chat-input-row">
+          <label className="sr-only" htmlFor={inputId}>
+            Ask anything about the conversation
+          </label>
+          <textarea
+            ref={textareaRef}
+            id={inputId}
+            aria-label="Ask anything about the conversation"
+            data-chat-input="true"
+            className="chat-input"
+            maxLength={MAX_MESSAGE_LENGTH}
+            name={inputId}
+            placeholder="Ask anything about the conversation…"
+            rows={1}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value.slice(0, MAX_MESSAGE_LENGTH))}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                submitDraft();
+              }
+            }}
+            disabled={isLoading}
+          />
+          <button
+            aria-label="Send message"
+            className="send-btn disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={isLoading || draft.trim().length === 0}
+            type="submit"
+          >
+            <svg aria-hidden="true" className="send-icon" viewBox="0 0 24 24">
+              <line x1="22" x2="11" y1="2" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </button>
         </div>
-        <button
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={isLoading || draft.trim().length === 0}
-          type="submit"
-        >
-          {isLoading ? <span aria-hidden="true" className="subtle-spinner" /> : null}
-          Send Message
-        </button>
       </form>
     </section>
   );
