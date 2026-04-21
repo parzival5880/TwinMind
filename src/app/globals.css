@@ -417,6 +417,7 @@ textarea {
   border-radius: 999px;
   border: 1.5px solid rgba(167, 139, 250, 0.25);
   opacity: 0;
+  pointer-events: none;
 }
 
 .mic-wrap[data-live="true"] .mic-ring {
