@@ -6,7 +6,7 @@ import { AudioRecorder } from "@/components/AudioRecorder";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ExportButton } from "@/components/ExportButton";
 import { HelpModal } from "@/components/HelpModal";
-import { SettingsModal } from "@/components/SettingsModal";
+import { SuggestionPipelineDebugPanel } from "@/components/SuggestionPipelineDebugPanel";
 import { SuggestionsPanel } from "@/components/SuggestionsPanel";
 import { TelemetryPanel } from "@/components/TelemetryPanel";
 import { ToastViewport } from "@/components/ToastViewport";
@@ -14,9 +14,10 @@ import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { useAudio } from "@/hooks/useAudio";
 import { useChat } from "@/hooks/useChat";
 import { useMeetingClassifier } from "@/hooks/useMeetingClassifier";
+import { useMeetingWrapUp } from "@/hooks/useMeetingWrapUp";
 import { useRollingSummary } from "@/hooks/useRollingSummary";
 import { useSalienceStore } from "@/hooks/useSalienceStore";
-import { useSettings } from "@/hooks/useSettings";
+import { useSuggestionPreferences } from "@/hooks/useSuggestionPreferences";
 import { useSuggestions } from "@/hooks/useSuggestions";
 import { useToastQueue } from "@/hooks/useToastQueue";
 import type { RollingSummary, SalientMoment, Suggestion, SuggestionMeta } from "@/lib/types";
@@ -26,6 +27,11 @@ type TranscriptJumpTarget = {
   requestId: number;
   timestamp: string;
 };
+
+const DISPLAY_INTERVAL_MS = 30_000;
+const AVG_GENERATION_MS = 15_000;
+const PRE_FIRE_OFFSET_MS = AVG_GENERATION_MS;
+const WARMUP_MS = DISPLAY_INTERVAL_MS - PRE_FIRE_OFFSET_MS;
 
 const formatRecordingDuration = (durationMs: number) => {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
@@ -41,7 +47,6 @@ const formatRecordingDuration = (durationMs: number) => {
 };
 
 export default function HomePage() {
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [activeMobileTab, setActiveMobileTab] = useState<MobileTab>("transcript");
   const [isDebugEnabled] = useState(
@@ -52,19 +57,19 @@ export default function HomePage() {
   const [transcriptJumpTarget, setTranscriptJumpTarget] = useState<TranscriptJumpTarget | null>(
     null,
   );
-  const [showSettingsRestartBanner, setShowSettingsRestartBanner] = useState(false);
   const [, setIsWaitingForSpeech] = useState(false);
   const { pushToast, removeToast, toasts } = useToastQueue();
   const {
-    defaultSettings,
-    feedback,
-    fieldErrors,
-    isLoaded,
-    isSaving,
-    resetSettings,
-    settings,
-    updateSettings,
-  } = useSettings();
+    clearPins,
+    isMuted,
+    isPinned,
+    mutedTypes,
+    pinnedIds,
+    pinnedSuggestions,
+    resetMutedTypes,
+    toggleMuteType,
+    togglePin,
+  } = useSuggestionPreferences();
   const {
     clearTranscript,
     committedTranscript,
@@ -78,22 +83,22 @@ export default function HomePage() {
     stopRecording,
     transcriptionNotice,
     transcript,
-  } = useAudio({
-    groqApiKey: settings.groq_api_key,
-  });
+  } = useAudio();
   const [isRefreshingTranscript, setIsRefreshingTranscript] = useState(false);
   const [nextAutoRefreshAt, setNextAutoRefreshAt] = useState<number | null>(null);
   const [suggestionsCountdown, setSuggestionsCountdown] = useState<number | null>(null);
   const {
     cancelSuggestions,
+    clearSuggestions,
     error: suggestionsError,
     generateSuggestions,
     isLoading: isSuggestionsLoading,
+    lastGroundingDebug,
+    lastPipelineDebug,
+    skipState,
+    streamingBatches,
     suggestions,
   } = useSuggestions({
-    contextWindow: settings.context_window_suggestions,
-    groqApiKey: settings.groq_api_key,
-    promptTemplate: settings.live_suggestion_prompt,
     pauseWhileChatInflight: () => isChatLoadingRef.current,
   });
   const {
@@ -103,27 +108,25 @@ export default function HomePage() {
     messages,
     retryMessage,
     sendMessage,
-  } = useChat({
-    chatPromptTemplate: settings.chat_prompt,
-    contextWindow: settings.context_window_answers,
-    detailedAnswerPromptTemplate: settings.detailed_answer_prompt,
-    groqApiKey: settings.groq_api_key,
-  });
+  } = useChat();
   const { resetSummary, rollingSummary } = useRollingSummary({
     enabled: isRecording,
-    groqApiKey: settings.groq_api_key,
     transcript: committedTranscript,
   });
+  const {
+    wrapUp,
+    isGenerating: isGeneratingWrapUp,
+    generate: generateWrapUp,
+    reset: resetWrapUp,
+  } = useMeetingWrapUp();
   const { classifiedType } = useMeetingClassifier({
     enabled: isRecording,
-    groqApiKey: settings.groq_api_key,
     recordingDurationMs,
     transcript: committedTranscript,
   });
   const { moments: salientMoments, reset: resetSalience } = useSalienceStore({
     chunks: committedTranscript,
     isRecording,
-    apiKey: settings.groq_api_key,
   });
   const transcriptSignature = useMemo(
     () =>
@@ -314,15 +317,19 @@ export default function HomePage() {
     };
 
     let intervalId: number | null = null;
-    setNextAutoRefreshAt(Date.now() + 28_000);
+    let cycleIndex = 1;
+    const startedAt = Date.now();
+    setNextAutoRefreshAt(startedAt + DISPLAY_INTERVAL_MS);
     const warmupId = window.setTimeout(() => {
       maybeGenerateSuggestions();
-      setNextAutoRefreshAt(Date.now() + 30_000);
+      cycleIndex += 1;
+      setNextAutoRefreshAt(startedAt + DISPLAY_INTERVAL_MS * cycleIndex);
       intervalId = window.setInterval(() => {
         maybeGenerateSuggestions();
-        setNextAutoRefreshAt(Date.now() + 30_000);
-      }, 30_000);
-    }, 28_000);
+        cycleIndex += 1;
+        setNextAutoRefreshAt(startedAt + DISPLAY_INTERVAL_MS * cycleIndex);
+      }, DISPLAY_INTERVAL_MS);
+    }, WARMUP_MS);
 
     return () => {
       window.clearTimeout(warmupId);
@@ -364,72 +371,40 @@ export default function HomePage() {
     void handleGenerateSuggestions("manual");
   }, [cancelSuggestions, flushPendingChunk, handleGenerateSuggestions, isRecording]);
 
-  const openSettings = useCallback(() => {
-    setIsHelpOpen(false);
-    setIsSettingsOpen(true);
-  }, []);
-
   const handleStartRecording = useCallback(async () => {
     setActiveMobileTab("transcript");
+    resetWrapUp();
     await startRecording();
-  }, [startRecording]);
+  }, [resetWrapUp, startRecording]);
 
   const handleStopRecording = useCallback(() => {
     stopRecording();
-    setShowSettingsRestartBanner(false);
-  }, [stopRecording]);
+    void generateWrapUp({
+      full_transcript: committedTranscript.map((chunk) => chunk.text).join("\n"),
+      rolling_summary: rollingSummaryRef.current,
+      salient_memory: salientMemoryRef.current,
+      meeting_type: latestSuggestionMetaRef.current?.meeting_type,
+    });
+  }, [committedTranscript, generateWrapUp, stopRecording]);
 
   const handleClearTranscript = useCallback(() => {
     clearTranscript();
+    clearSuggestions();
     resetSummary();
     resetSalience();
+    resetWrapUp();
+    clearPins();
+    resetMutedTypes();
     lastGeneratedSignatureRef.current = "";
-    setShowSettingsRestartBanner(false);
-  }, [clearTranscript, resetSalience, resetSummary]);
-
-  const handleSaveSettings = useCallback(
-    async (nextSettings: typeof settings) => {
-      const didChange = JSON.stringify(nextSettings) !== JSON.stringify(settings);
-      const saved = await updateSettings(nextSettings);
-
-      if (!saved) {
-        pushToast({
-          action: {
-            label: "Open Settings",
-            onAction: openSettings,
-          },
-          message: "Settings were not saved. Fix the highlighted issues and try again.",
-          tone: "error",
-          title: "Settings error",
-        });
-
-        return false;
-      }
-
-      pushToast({
-        message: "Settings saved successfully.",
-        tone: "success",
-        title: "Saved",
-      });
-
-      if (didChange && (isRecording || transcript.length > 0)) {
-        setShowSettingsRestartBanner(true);
-      }
-
-      return true;
-    },
-    [isRecording, openSettings, pushToast, settings, transcript.length, updateSettings],
-  );
-
-  const handleResetSettings = useCallback(() => {
-    resetSettings();
-    setShowSettingsRestartBanner(false);
-    pushToast({
-      message: "Defaults restored. New transcriptions will use the default settings.",
-      tone: "info",
-      title: "Defaults restored",
-    });
-  }, [pushToast, resetSettings]);
+  }, [
+    clearPins,
+    clearSuggestions,
+    clearTranscript,
+    resetMutedTypes,
+    resetSalience,
+    resetSummary,
+    resetWrapUp,
+  ]);
 
   const handleCopySuggestion = useCallback(
     async (suggestion: Suggestion) => {
@@ -504,17 +479,11 @@ export default function HomePage() {
 
     lastAudioErrorRef.current = error;
     pushToast({
-      action: error.toLowerCase().includes("grant mic access")
-        ? {
-          label: "Open Settings",
-          onAction: openSettings,
-        }
-        : undefined,
       message: error,
       tone: "error",
       title: "Microphone issue",
     });
-  }, [error, openSettings, pushToast]);
+  }, [error, pushToast]);
 
   useEffect(() => {
     if (!suggestionsError) {
@@ -530,19 +499,16 @@ export default function HomePage() {
     lastSuggestionsErrorRef.current = suggestionsError;
     pushToast({
       action: suggestionsError.toLowerCase().includes("api key")
-        ? {
-          label: "Open Settings",
-          onAction: openSettings,
-        }
+        ? undefined
         : {
-          label: "Retry",
-          onAction: handleManualRefresh,
-        },
+            label: "Retry",
+            onAction: handleManualRefresh,
+          },
       message: suggestionsError,
       tone: "error",
       title: "Suggestions failed",
     });
-  }, [handleManualRefresh, openSettings, pushToast, suggestionsError]);
+  }, [handleManualRefresh, pushToast, suggestionsError]);
 
   useEffect(() => {
     if (!chatError) {
@@ -558,10 +524,7 @@ export default function HomePage() {
     lastChatErrorRef.current = chatError;
     pushToast({
       action: chatError.toLowerCase().includes("api key")
-        ? {
-          label: "Open Settings",
-          onAction: openSettings,
-        }
+        ? undefined
         : lastRetryableAssistantId
           ? {
             label: "Retry",
@@ -574,7 +537,7 @@ export default function HomePage() {
       tone: "error",
       title: "Chat failed",
     });
-  }, [chatError, lastRetryableAssistantId, openSettings, pushToast, retryMessage, transcript]);
+  }, [chatError, lastRetryableAssistantId, pushToast, retryMessage, transcript]);
 
   useEffect(() => {
     if (!transcriptionNotice) {
@@ -592,10 +555,7 @@ export default function HomePage() {
 
     pushToast({
       action: normalizedNotice.includes("api key")
-        ? {
-          label: "Open Settings",
-          onAction: openSettings,
-        }
+        ? undefined
         : normalizedNotice.includes("lagging")
           ? {
             label: "Refresh Suggestions",
@@ -610,7 +570,7 @@ export default function HomePage() {
           : "error",
       title: "Transcription update",
     });
-  }, [handleManualRefresh, openSettings, pushToast, transcriptionNotice]);
+  }, [handleManualRefresh, pushToast, transcriptionNotice]);
 
   useEffect(() => {
     const handleKeydown = (event: KeyboardEvent) => {
@@ -623,7 +583,6 @@ export default function HomePage() {
 
       if (event.key === "Escape") {
         setIsHelpOpen(false);
-        setIsSettingsOpen(false);
         return;
       }
 
@@ -691,6 +650,20 @@ export default function HomePage() {
     [suggestions],
   );
   const suggestionsHeaderBadge = `${totalSuggestionCount} ${totalSuggestionCount === 1 ? "card" : "cards"}`;
+  const resolveSuggestionTimestamp = useCallback(
+    (suggestion: Suggestion) => {
+      const quote = suggestion.evidence_quote.trim().toLowerCase();
+
+      if (!quote || quote === "(no quote captured)") {
+        return null;
+      }
+
+      const matchingChunk = transcript.find((chunk) => chunk.text.toLowerCase().includes(quote));
+
+      return matchingChunk ? matchingChunk.timestamp.toTimeString().slice(0, 8) : null;
+    },
+    [transcript],
+  );
 
   return (
     <>
@@ -732,27 +705,6 @@ export default function HomePage() {
                 <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none" />
               </svg>
             </button>
-            <button
-              aria-label="Open settings modal"
-              className="header-icon-btn"
-              title="Settings"
-              type="button"
-              onClick={openSettings}
-            >
-              <svg
-                aria-hidden="true"
-                className="h-3.5 w-3.5"
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.8"
-                viewBox="0 0 24 24"
-              >
-                <path d="M12 3.75a2.25 2.25 0 0 1 2.18 1.68l.18.7a2.25 2.25 0 0 0 2.72 1.59l.71-.17a2.25 2.25 0 0 1 2.63 3.03l-.29.68a2.25 2.25 0 0 0 .66 2.94l.59.43a2.25 2.25 0 0 1 0 3.64l-.59.43a2.25 2.25 0 0 0-.66 2.94l.29.68a2.25 2.25 0 0 1-2.63 3.03l-.71-.17a2.25 2.25 0 0 0-2.72 1.59l-.18.7a2.25 2.25 0 0 1-4.36 0l-.18-.7a2.25 2.25 0 0 0-2.72-1.59l-.71.17a2.25 2.25 0 0 1-2.63-3.03l.29-.68a2.25 2.25 0 0 0-.66-2.94l-.59-.43a2.25 2.25 0 0 1 0-3.64l.59-.43a2.25 2.25 0 0 0 .66-2.94l-.29-.68a2.25 2.25 0 0 1 2.63-3.03l.71.17a2.25 2.25 0 0 0 2.72-1.59l.18-.7A2.25 2.25 0 0 1 12 3.75Z" />
-                  <path d="M12 15.75A3.75 3.75 0 1 0 12 8.25a3.75 3.75 0 0 0 0 7.5Z" />
-              </svg>
-            </button>
             <ExportButton
               buttonId="export-session-button"
               buttonClassName="header-icon-btn"
@@ -768,12 +720,6 @@ export default function HomePage() {
             />
           </div>
         </header>
-
-        {showSettingsRestartBanner ? (
-          <div className="settings-restart-banner">
-            Changes will apply to the next transcription.
-          </div>
-        ) : null}
 
         <nav
           aria-label="Mobile workspace tabs"
@@ -844,13 +790,19 @@ export default function HomePage() {
             <SuggestionsPanel
               countdownSeconds={suggestionsCountdown}
               error={suggestionsError}
+              isGeneratingWrapUp={isGeneratingWrapUp}
               isLoading={isSuggestionsLoading}
+              isRecording={isRecording}
               isRefreshingTranscript={isRefreshingTranscript}
+              isMuted={isMuted}
+              isPinned={isPinned}
+              mutedTypes={mutedTypes}
               onCopySuggestion={(suggestion) => {
                 void handleCopySuggestion(suggestion);
               }}
               onDismissSuggestion={handleDismissSuggestion}
-              onOpenSettings={openSettings}
+              onJumpToTimestamp={handleJumpToTimestamp}
+              onNewSession={handleClearTranscript}
               onRefresh={handleManualRefresh}
               onSuggestionSelected={(suggestion, meta) => {
                 void addSuggestionAsMessage(
@@ -859,7 +811,15 @@ export default function HomePage() {
                   buildChatContextOptions(meta),
                 );
               }}
+              pinnedIds={pinnedIds}
+              pinnedSuggestions={pinnedSuggestions}
+              resolveTimestampForSuggestion={resolveSuggestionTimestamp}
+              skipState={skipState}
+              streamingBatches={streamingBatches}
               suggestionBatches={suggestions}
+              toggleMuteType={toggleMuteType}
+              togglePin={togglePin}
+              wrapUp={wrapUp}
             />
           </div>
 
@@ -874,7 +834,6 @@ export default function HomePage() {
               isLoading={isChatLoading}
               messages={messages}
               onJumpToTimestamp={handleJumpToTimestamp}
-              onOpenSettings={openSettings}
               onRetryMessage={(messageId, currentTranscript) => {
                 void retryMessage(messageId, currentTranscript, buildChatContextOptions());
               }}
@@ -940,13 +899,19 @@ export default function HomePage() {
               <SuggestionsPanel
                 countdownSeconds={suggestionsCountdown}
                 error={suggestionsError}
+                isGeneratingWrapUp={isGeneratingWrapUp}
                 isLoading={isSuggestionsLoading}
+                isRecording={isRecording}
                 isRefreshingTranscript={isRefreshingTranscript}
+                isMuted={isMuted}
+                isPinned={isPinned}
+                mutedTypes={mutedTypes}
                 onCopySuggestion={(suggestion) => {
                   void handleCopySuggestion(suggestion);
                 }}
                 onDismissSuggestion={handleDismissSuggestion}
-                onOpenSettings={openSettings}
+                onJumpToTimestamp={handleJumpToTimestamp}
+                onNewSession={handleClearTranscript}
                 onRefresh={handleManualRefresh}
                 onSuggestionSelected={(suggestion, meta) => {
                   void addSuggestionAsMessage(
@@ -955,7 +920,15 @@ export default function HomePage() {
                     buildChatContextOptions(meta),
                   );
                 }}
+                pinnedIds={pinnedIds}
+                pinnedSuggestions={pinnedSuggestions}
+                resolveTimestampForSuggestion={resolveSuggestionTimestamp}
+                skipState={skipState}
+                streamingBatches={streamingBatches}
                 suggestionBatches={suggestions}
+                toggleMuteType={toggleMuteType}
+                togglePin={togglePin}
+                wrapUp={wrapUp}
               />
             </>
           ) : null}
@@ -972,7 +945,6 @@ export default function HomePage() {
                 isLoading={isChatLoading}
                 messages={messages}
                 onJumpToTimestamp={handleJumpToTimestamp}
-                onOpenSettings={openSettings}
                 onRetryMessage={(messageId, currentTranscript) => {
                   void retryMessage(messageId, currentTranscript, buildChatContextOptions());
                 }}
@@ -985,21 +957,14 @@ export default function HomePage() {
           ) : null}
         </section>
 
-        {isDebugEnabled ? <TelemetryPanel /> : null}
+        {isDebugEnabled ? (
+          <>
+            <SuggestionPipelineDebugPanel debug={lastPipelineDebug} grounding={lastGroundingDebug} />
+            <TelemetryPanel grounding={lastGroundingDebug} />
+          </>
+        ) : null}
       </main>
 
-      <SettingsModal
-        defaultSettings={defaultSettings}
-        feedback={feedback}
-        fieldErrors={fieldErrors}
-        isOpen={isSettingsOpen}
-        isLoaded={isLoaded}
-        isSaving={isSaving}
-        onClose={() => setIsSettingsOpen(false)}
-        onResetSettings={handleResetSettings}
-        onSaveSettings={handleSaveSettings}
-        settings={settings}
-      />
       <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
     </>
   );

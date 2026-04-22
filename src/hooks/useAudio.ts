@@ -15,7 +15,6 @@ import type { TranscriptChunk, TranscribeResponse } from "@/lib/types";
 
 type UseAudioOptions = {
   chunkDurationMs?: number;
-  groqApiKey?: string;
   onAudioChunk?: (blob: Blob, timestamp: Date) => void;
   onTranscript?: (chunk: TranscriptChunk) => void;
   vadThreshold?: number;
@@ -189,7 +188,6 @@ const dispatchAudioDebugEvent = (eventName: string) => {
 
 export function useAudio({
   chunkDurationMs = MEDIA_RECORDER_TIMESLICE_MS,
-  groqApiKey,
   onAudioChunk,
   onTranscript,
   vadThreshold = DEFAULT_VAD_THRESHOLD,
@@ -523,7 +521,6 @@ export function useAudio({
           const response = await fetch("/api/transcribe", {
             signal: abortController.signal,
             body: formData,
-            headers: groqApiKey ? { "x-groq-api-key": groqApiKey } : undefined,
             method: "POST",
           });
 
@@ -577,7 +574,7 @@ export function useAudio({
         }
       })();
     }
-  }, [appendCompletedWindow, groqApiKey, showNotice, updateTranscriptionActivityState]);
+  }, [appendCompletedWindow, showNotice, updateTranscriptionActivityState]);
 
   const enqueueTranscriptionWindow = useCallback(
     (slice: AudioSlice) => {

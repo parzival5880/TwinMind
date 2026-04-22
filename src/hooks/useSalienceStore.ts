@@ -10,7 +10,6 @@ import type {
 type UseSalienceStoreOptions = {
   chunks: TranscriptChunk[];
   isRecording: boolean;
-  apiKey: string;
 };
 
 type UseSalienceStoreResult = {
@@ -64,7 +63,6 @@ const pruneToMaxSize = (moments: SalientMoment[]) => {
 export function useSalienceStore({
   chunks,
   isRecording,
-  apiKey,
 }: UseSalienceStoreOptions): UseSalienceStoreResult {
   const momentsRef = useRef<SalientMoment[]>([]);
   const [moments, setMoments] = useState<SalientMoment[]>([]);
@@ -74,15 +72,10 @@ export function useSalienceStore({
   const originalImportanceMap = useRef<Map<string, number>>(new Map());
 
   const chunksRef = useRef(chunks);
-  const apiKeyRef = useRef(apiKey);
 
   useEffect(() => {
     chunksRef.current = chunks;
   }, [chunks]);
-
-  useEffect(() => {
-    apiKeyRef.current = apiKey;
-  }, [apiKey]);
 
   const runExtraction = useCallback(async () => {
     if (inflightRef.current) {
@@ -115,12 +108,6 @@ export function useSalienceStore({
         verbatim,
       }));
 
-    const key = apiKeyRef.current;
-
-    if (!key) {
-      return;
-    }
-
     inflightRef.current = true;
 
     try {
@@ -128,7 +115,6 @@ export function useSalienceStore({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-groq-api-key": key,
         },
         body: JSON.stringify({
           transcript_slice: transcriptSlice,

@@ -5,19 +5,71 @@ export type TranscriptChunk = {
   speaker?: string;
 };
 
+export type SuggestionType =
+  | "question"
+  | "talking_point"
+  | "answer"
+  | "fact_check"
+  | "clarification";
+
+export type SuggestionConviction = "high" | "medium";
+
 export type Suggestion = {
   id: string;
-  type: "question" | "talking_point" | "answer" | "fact_check" | "clarification";
+  type: SuggestionType;
+  conviction?: SuggestionConviction;
   preview: string;
   full_content: string;
   evidence_quote: string;
+  rationale: string;
   why_relevant: string;
+  source_url?: string;
+  source_title?: string;
+  source_scope?: string;
   trigger?: string;
+  selection_reason?: string;
+};
+
+export type SuggestionCandidate = {
+  type: SuggestionType;
+  conviction?: SuggestionConviction;
+  preview: string;
+  full_content: string;
+  evidence_quote: string;
+  rationale: string;
+  source_url?: string;
+};
+
+export type SuggestionGroundingDebug = {
+  entities_found: number;
+  entities: string[];
+  searches_used: number;
+  searches_remaining: number;
+  cache_hits: number;
+  facts_count: number;
+  skipped_reason?: "disabled" | "no_api_key" | "cap_reached" | "no_entities";
+};
+
+export type SuggestionPipelineDebug = {
+  candidates: SuggestionCandidate[];
+  selections: Suggestion[];
+  fell_back_to_raw: boolean;
+  critique_skipped_budget: boolean;
+  retry_fired: boolean;
+  call_a_ms?: number;
+  call_b_ms?: number;
+  grounding?: SuggestionGroundingDebug;
 };
 
 export type SuggestionMeta = {
   meeting_type: string;
   conversation_stage: string;
+  grounding?: {
+    searches_used: number;
+    searches_remaining: number;
+    facts_count: number;
+    skipped_reason?: string;
+  };
   grounding_audit?: Array<{ id: string; grounded: boolean; score: number }>;
 };
 
@@ -85,7 +137,6 @@ export type ChatMessage = {
   errorMessage?: string;
   isStreaming?: boolean;
   requestMessage?: string;
-  requestPromptTemplate?: string;
   requestSuggestion?: Suggestion;
   requestMeta?: SuggestionMeta;
   streamError?: boolean;
@@ -105,17 +156,6 @@ export type SessionState = {
   isRecording: boolean;
 };
 
-export type SettingsConfig = {
-  groq_api_key: string;
-  live_suggestion_prompt: string;
-  detailed_answer_prompt: string;
-  chat_prompt: string;
-  context_window_suggestions: number;
-  context_window_answers: number;
-};
-
-export type SettingsFieldErrors = Partial<Record<keyof SettingsConfig, string>>;
-
 export type TranscribeResponse = {
   success: boolean;
   text: string;
@@ -132,11 +172,11 @@ export type SuggestionsRequest = {
   rolling_summary?: string | RollingSummary | null;
   recent_chat_topics?: string;
   avoid_phrases?: string[];
-  context_window?: number;
-  prompt_template?: string;
   meeting_type?: string;
   conversation_stage?: string;
   salient_memory?: SalientMoment[];
+  session_id?: string;
+  debug?: boolean;
 };
 
 export type SuggestionsResponse = {
@@ -177,10 +217,86 @@ export type ChatResponse = {
   error?: string;
 };
 
+export type MeetingWrapUp = {
+  gist: string;
+  agenda: string[];
+  generated_at: string;
+};
+
+export type WrapUpRequest = {
+  full_transcript: string;
+  rolling_summary?: RollingSummary | null;
+  salient_memory?: SalientMoment[];
+  meeting_type?: string;
+};
+
+export type WrapUpResponse = {
+  wrap_up: MeetingWrapUp | null;
+  error?: string;
+};
+
 export type ChatStreamEvent =
   | {
       token: string;
     }
   | {
       error: string;
+    };
+
+export type SuggestionStreamDoneSummary = {
+  batch_id: string;
+  total_cards: number;
+  critique_used: boolean;
+  retry_fired: boolean;
+  meta?: SuggestionMeta;
+};
+
+export type SuggestionStreamEvent =
+  | {
+      type: "grounding";
+      entities_found: number;
+      entities: string[];
+      searches_used: number;
+      searches_remaining: number;
+      cache_hits: number;
+      facts_count: number;
+      skipped_reason?: "disabled" | "no_api_key" | "cap_reached" | "no_entities";
+    }
+  | {
+      type: "meta";
+      batch_id: string;
+      generated_at: string;
+      meeting_type: string;
+      conversation_stage: string;
+    }
+  | {
+      type: "critique_starting";
+      candidate_count: number;
+    }
+  | {
+      type: "card";
+      index: number;
+      suggestion: Suggestion;
+      replace?: boolean;
+    }
+  | {
+      type: "retrying";
+      reason: string;
+    }
+  | {
+      type: "debug";
+      pipeline: SuggestionPipelineDebug;
+    }
+  | {
+      type: "done";
+      batch_id: string;
+      total_cards: number;
+      critique_used: boolean;
+      retry_fired: boolean;
+      meta?: SuggestionMeta;
+    }
+  | {
+      type: "error";
+      message: string;
+      code: string;
     };

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, type ReactElement } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { format } from "date-fns";
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { TranscriptChunk } from "@/lib/types";
@@ -24,6 +24,15 @@ const DEFAULT_ROW_HEIGHT = 64;
 
 const estimateRowHeight = (chunk: TranscriptChunk) =>
   Math.max(DEFAULT_ROW_HEIGHT, 32 + Math.ceil(chunk.text.length / 78) * 22);
+
+const matchesJumpTimestamp = (chunk: TranscriptChunk, timestamp: string) => {
+  const normalizedTimestamp = timestamp.trim();
+
+  return (
+    format(chunk.timestamp, "HH:mm:ss") === normalizedTimestamp ||
+    format(chunk.timestamp, "HH:mm") === normalizedTimestamp
+  );
+};
 
 const shouldAccentChunk = (chunk: TranscriptChunk, previousChunk?: TranscriptChunk) => {
   if (!previousChunk) {
@@ -99,17 +108,16 @@ export function TranscriptPanel({
   isTranscribing = false,
   jumpTarget,
 }: TranscriptPanelProps) {
+  const [flashHighlightedChunkId, setFlashHighlightedChunkId] = useState<string | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
   const chunkElementMapRef = useRef<Map<string, HTMLElement>>(new Map());
   const listRef = useRef<ListImperativeAPI | null>(null);
-  const highlightedChunkId = useMemo(() => {
+  const matchingJumpChunkId = useMemo(() => {
     if (!jumpTarget) {
       return null;
     }
 
-    return (
-      chunks.find((chunk) => format(chunk.timestamp, "HH:mm") === jumpTarget.timestamp)?.id ?? null
-    );
+    return chunks.find((chunk) => matchesJumpTimestamp(chunk, jumpTarget.timestamp))?.id ?? null;
   }, [chunks, jumpTarget]);
   const shouldVirtualize = chunks.length > VIRTUALIZATION_THRESHOLD;
   const activeChunkId =
@@ -141,8 +149,8 @@ export function TranscriptPanel({
       return;
     }
 
-    const matchingChunkIndex = chunks.findIndex(
-      (chunk) => format(chunk.timestamp, "HH:mm") === jumpTarget.timestamp,
+    const matchingChunkIndex = chunks.findIndex((chunk) =>
+      matchesJumpTimestamp(chunk, jumpTarget.timestamp),
     );
 
     if (matchingChunkIndex === -1) {
@@ -166,6 +174,26 @@ export function TranscriptPanel({
       behavior: "smooth",
     });
   }, [chunks, jumpTarget, shouldVirtualize]);
+
+  useEffect(() => {
+    if (!jumpTarget || !matchingJumpChunkId) {
+      return;
+    }
+
+    const startHighlightTimeoutId = window.setTimeout(() => {
+      setFlashHighlightedChunkId(matchingJumpChunkId);
+    }, 0);
+    const timeoutId = window.setTimeout(() => {
+      setFlashHighlightedChunkId((currentValue) =>
+        currentValue === matchingJumpChunkId ? null : currentValue,
+      );
+    }, 1_000);
+
+    return () => {
+      window.clearTimeout(startHighlightTimeoutId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [jumpTarget, matchingJumpChunkId]);
 
   return (
     <section aria-label="Transcript panel" className="flex min-h-0 flex-1 flex-col">
@@ -196,7 +224,7 @@ export function TranscriptPanel({
               rowProps={{
                 activeChunkId,
                 chunks,
-                highlightedChunkId: highlightedChunkId ?? undefined,
+                highlightedChunkId: flashHighlightedChunkId ?? undefined,
               }}
               style={{ height: "100%" }}
             />
@@ -206,7 +234,7 @@ export function TranscriptPanel({
                 <TranscriptChunkRow
                   key={chunk.id}
                   chunk={chunk}
-                  highlighted={chunk.id === highlightedChunkId}
+                  highlighted={chunk.id === flashHighlightedChunkId}
                   isActive={chunk.id === activeChunkId}
                   shouldAccent={shouldAccentChunk(chunk, chunks[index - 1])}
                   registerElement={(element) => {

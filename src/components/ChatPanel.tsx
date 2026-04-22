@@ -9,7 +9,6 @@ type ChatPanelProps = {
   isLoading: boolean;
   messages: ChatMessage[];
   onJumpToTimestamp: (timestamp: string) => void;
-  onOpenSettings?: () => void;
   onRetryMessage: (messageId: string, transcript: TranscriptChunk[]) => Promise<void> | void;
   onSendMessage: (message: string, transcript: TranscriptChunk[]) => Promise<void> | void;
   transcript: TranscriptChunk[];
@@ -182,7 +181,6 @@ export function ChatPanel({
   isLoading,
   messages,
   onJumpToTimestamp,
-  onOpenSettings,
   onRetryMessage,
   onSendMessage,
   transcript,
@@ -199,7 +197,6 @@ export function ChatPanel({
 
     return null;
   }, [messages]);
-  const isApiKeyError = error?.toLowerCase().includes("api key") ?? false;
   const userSuggestionLabels = useMemo(() => {
     const labelMap = new Map<string, string>();
 
@@ -267,11 +264,6 @@ export function ChatPanel({
         {error ? (
           <div className="mb-3 rounded-[var(--radius)] border border-[rgba(248,113,113,.22)] bg-[rgba(248,113,113,.08)] px-3 py-2 text-[11px] leading-[1.55] text-[var(--rose)]">
             <p>{error}</p>
-            {isApiKeyError && onOpenSettings ? (
-              <button className="chat-inline-action mt-1" type="button" onClick={onOpenSettings}>
-                Open Settings
-              </button>
-            ) : null}
           </div>
         ) : null}
 

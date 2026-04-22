@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
+import { isLargeModelExpandedContext } from "@/lib/llm-clients";
 import { buildContextBundle } from "@/lib/context";
 import { startTelemetryMeasurement } from "@/lib/telemetry";
 import type {
@@ -14,13 +15,6 @@ import type {
   SuggestionMeta,
   TranscriptChunk,
 } from "@/lib/types";
-
-type UseChatOptions = {
-  chatPromptTemplate?: string;
-  contextWindow?: number;
-  detailedAnswerPromptTemplate?: string;
-  groqApiKey?: string;
-};
 
 type UseChatResult = {
   addSuggestionAsMessage: (
@@ -46,7 +40,6 @@ type UseChatResult = {
 type StreamRequestOptions = {
   appendUserMessage: boolean;
   assistantMessageId?: string;
-  promptTemplate?: string;
   selectedSuggestion?: Suggestion;
   summary: RollingSummary | null;
   salientMemory: SalientMoment[];
@@ -76,13 +69,10 @@ const parseSseEvent = (rawEvent: string): string[] =>
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trim());
 
-const CHAT_FETCH_TIMEOUT_MS = 25_000;
+const CHAT_FETCH_TIMEOUT_MS_STANDARD = 25_000;
+const CHAT_FETCH_TIMEOUT_MS_EXPANDED = 45_000;
 
-export function useChat({
-  chatPromptTemplate,
-  detailedAnswerPromptTemplate,
-  groqApiKey,
-}: UseChatOptions = {}): UseChatResult {
+export function useChat(): UseChatResult {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +89,6 @@ export function useChat({
     {
       appendUserMessage,
       assistantMessageId,
-      promptTemplate,
       salientMemory,
       selectedSuggestion,
       suggestionMeta,
@@ -129,7 +118,6 @@ export function useChat({
       timestamp: now,
       isStreaming: true,
       requestMessage: trimmedMessage,
-      requestPromptTemplate: promptTemplate,
       requestSuggestion: selectedSuggestion,
       requestMeta: suggestionMeta,
       streamError: false,
@@ -153,7 +141,6 @@ export function useChat({
                 errorMessage: undefined,
                 isStreaming: true,
                 requestMessage: trimmedMessage,
-                requestPromptTemplate: promptTemplate,
                 requestSuggestion: selectedSuggestion,
                 requestMeta: suggestionMeta,
                 streamError: false,
@@ -169,9 +156,12 @@ export function useChat({
 
     abortControllerRef.current?.abort();
     const abortController = new AbortController();
+    const chatTimeoutMs = isLargeModelExpandedContext()
+      ? CHAT_FETCH_TIMEOUT_MS_EXPANDED
+      : CHAT_FETCH_TIMEOUT_MS_STANDARD;
     const abortTimeoutId = window.setTimeout(() => {
       abortController.abort();
-    }, CHAT_FETCH_TIMEOUT_MS);
+    }, chatTimeoutMs);
     abortControllerRef.current = abortController;
 
     try {
@@ -189,7 +179,6 @@ export function useChat({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(groqApiKey ? { "x-groq-api-key": groqApiKey } : {}),
         },
         body: JSON.stringify({
           message: trimmedMessage,
@@ -326,7 +315,6 @@ export function useChat({
   ) => {
     await sendMessageWithPrompt(message, transcript, {
       appendUserMessage: true,
-      promptTemplate: chatPromptTemplate,
       salientMemory: options.salientMemory ?? [],
       summary: options.rollingSummary ?? null,
       suggestionMeta: options.suggestionMeta,
@@ -340,7 +328,6 @@ export function useChat({
   ) => {
     await sendMessageWithPrompt(suggestion.preview, transcript, {
       appendUserMessage: true,
-      promptTemplate: detailedAnswerPromptTemplate ?? chatPromptTemplate,
       selectedSuggestion: suggestion,
       salientMemory: options.salientMemory ?? [],
       summary: options.rollingSummary ?? null,
@@ -362,7 +349,6 @@ export function useChat({
     await sendMessageWithPrompt(messageToRetry.requestMessage, transcript, {
       appendUserMessage: false,
       assistantMessageId: messageId,
-      promptTemplate: messageToRetry.requestPromptTemplate,
       selectedSuggestion: messageToRetry.requestSuggestion,
       salientMemory: options.salientMemory ?? [],
       summary: options.rollingSummary ?? null,

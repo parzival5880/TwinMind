@@ -6,7 +6,9 @@ export type TelemetryMetricName =
   | "transcription_round_trip"
   | "suggestions_first_render"
   | "chat_first_token"
-  | "chat_last_token";
+  | "chat_last_token"
+  | "suggestions_skip_shown"
+  | "meeting_wrap_up_generated";
 
 export type TelemetryMeasurement = {
   durationMs: number;
@@ -73,6 +75,13 @@ export const recordTelemetryMeasurement = (
   notifySubscribers();
 };
 
+export const recordTelemetryEvent = (
+  metric: TelemetryMetricName,
+  meta?: Record<string, string | number | boolean>,
+) => {
+  recordTelemetryMeasurement(metric, 0, meta);
+};
+
 export const startTelemetryMeasurement = (
   metric: TelemetryMetricName,
   meta?: Record<string, string | number | boolean>,
@@ -123,6 +132,8 @@ export const summarizeTelemetryMeasurements = (
     "suggestions_first_render",
     "chat_first_token",
     "chat_last_token",
+    "suggestions_skip_shown",
+    "meeting_wrap_up_generated",
   ];
 
   return metrics.map((metric) => {

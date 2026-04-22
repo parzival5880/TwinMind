@@ -9,6 +9,7 @@ import {
   transcribeAudio,
   validateGroqApiKey,
 } from "@/lib/groq-client";
+import { getServerGroqKey, SERVER_GROQ_KEY_MISSING_MESSAGE } from "@/lib/server-groq-key";
 import type { TranscribeResponse } from "@/lib/types";
 
 export const runtime = "edge";
@@ -19,11 +20,6 @@ const buildResponse = (
   ...response,
   timestamp: response.timestamp ?? new Date().toISOString(),
 });
-
-const resolveGroqApiKey = (request: Request) =>
-  request.headers.get("x-groq-api-key") ??
-  process.env.GROQ_API_KEY ??
-  process.env.NEXT_PUBLIC_GROQ_API_KEY;
 
 export async function POST(request: Request) {
   const timestamp = new Date().toISOString();
@@ -74,7 +70,21 @@ export async function POST(request: Request) {
   }
 
   try {
-    const resolvedApiKey = validateGroqApiKey(resolveGroqApiKey(request) ?? "");
+    const serverGroqKey = getServerGroqKey();
+
+    if (!serverGroqKey) {
+      return NextResponse.json(
+        buildResponse({
+          error: SERVER_GROQ_KEY_MISSING_MESSAGE,
+          success: false,
+          text: "",
+          timestamp,
+        }),
+        { status: 500 },
+      );
+    }
+
+    const resolvedApiKey = validateGroqApiKey(serverGroqKey);
     const previousTail =
       typeof previousTailValue === "string" && previousTailValue.trim()
         ? previousTailValue.trim().slice(-240)

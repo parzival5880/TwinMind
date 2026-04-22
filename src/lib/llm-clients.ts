@@ -10,8 +10,15 @@ export function isAzureConfigured(): boolean {
   return Boolean(AZURE_ENDPOINT && AZURE_KEY);
 }
 
+// Safe on both server (reads private Azure vars) and client (reads the
+// NEXT_PUBLIC mirror, which Next.js inlines at build time). If neither is
+// present the call resolves to `false` and the standard context path is used.
 export function isLargeModelExpandedContext(): boolean {
-  return isAzureConfigured();
+  if (isAzureConfigured()) {
+    return true;
+  }
+
+  return process.env.NEXT_PUBLIC_LARGE_MODEL_EXPANDED === "true";
 }
 
 export function getLargeModelName(): string {

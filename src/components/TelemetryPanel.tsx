@@ -1,6 +1,7 @@
 "use client";
 
 import { format } from "date-fns";
+import type { GroundingDebugState } from "@/hooks/useSuggestions";
 import {
   summarizeTelemetryMeasurements,
   useTelemetryMeasurements,
@@ -12,11 +13,17 @@ const metricLabels: Record<TelemetryMetricName, string> = {
   suggestions_first_render: "Refresh → first suggestion",
   chat_first_token: "Chat send → first token",
   chat_last_token: "Chat send → last token",
+  suggestions_skip_shown: "Suggestions skip shown",
+  meeting_wrap_up_generated: "Meeting wrap-up generated",
 };
 
-export function TelemetryPanel() {
+export function TelemetryPanel({ grounding }: { grounding?: GroundingDebugState | null }) {
   const measurements = useTelemetryMeasurements();
   const summaries = summarizeTelemetryMeasurements(measurements);
+  const cacheHitRate =
+    grounding && grounding.grounding.entities_found > 0
+      ? Math.round((grounding.grounding.cache_hits / grounding.grounding.entities_found) * 100)
+      : null;
 
   return (
     <aside className="soft-panel mt-4 rounded-[2rem] p-5">
@@ -68,6 +75,48 @@ export function TelemetryPanel() {
           </article>
         ))}
       </div>
+
+      {grounding ? (
+        <div className="mt-4 rounded-[1.25rem] border border-slate-200 bg-white/80 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Tavily searches
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">
+                {grounding.grounding.searches_used} used · {grounding.grounding.searches_remaining} remaining
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Cache hit rate
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">
+                {cacheHitRate === null ? "—" : `${cacheHitRate}%`}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                Grounding status
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-950">
+                {grounding.grounding.skipped_reason ?? "active"}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              Extracted entities
+            </p>
+            <p className="mt-1 text-sm text-slate-700">
+              {grounding.grounding.entities.length > 0
+                ? grounding.grounding.entities.join(" · ")
+                : "None"}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full border-separate border-spacing-y-2 text-left text-sm">

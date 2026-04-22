@@ -1,40 +1,19 @@
-import OpenAI from "openai";
-import Groq from "groq-sdk";
-import { NextResponse } from "next/server";
 import {
   APIKeyError,
-  SuggestionGenerationError,
-  TimeoutError,
-  generateSuggestions,
-  initializeGroqClient,
   validateGroqApiKey,
 } from "@/lib/groq-client";
-import { auditGrounding } from "@/lib/grounding-audit";
 import { isLargeModelExpandedContext } from "@/lib/llm-clients";
 import { renderRollingSummary, renderSalientMemory } from "@/lib/prompts";
+import { getServerGroqKey, SERVER_GROQ_KEY_MISSING_MESSAGE } from "@/lib/server-groq-key";
+import { generateSuggestionsPipeline, PipelineAbortedError } from "@/lib/suggestion-pipeline";
 import type {
   RollingSummary,
   SalientMoment,
+  SuggestionStreamEvent,
   SuggestionsRequest,
-  SuggestionsResponse,
 } from "@/lib/types";
 
 export const runtime = "edge";
-
-const buildResponse = ({
-  error,
-  meta,
-  suggestions,
-  success,
-  timestamp,
-}: SuggestionsResponse) => ({
-  error,
-  meta,
-  suggestions,
-  success,
-  timestamp,
-});
-
 
 const ROLLING_SUMMARY_PHASES = new Set([
   "exploring",
@@ -91,12 +70,12 @@ const isSuggestionsRequest = (value: unknown): value is SuggestionsRequest => {
     (candidate.avoid_phrases === undefined ||
       (Array.isArray(candidate.avoid_phrases) &&
         candidate.avoid_phrases.every((phrase) => typeof phrase === "string"))) &&
-    (candidate.context_window === undefined || typeof candidate.context_window === "number") &&
-    (candidate.prompt_template === undefined || typeof candidate.prompt_template === "string") &&
     (candidate.meeting_type === undefined || typeof candidate.meeting_type === "string") &&
     (candidate.conversation_stage === undefined ||
       typeof candidate.conversation_stage === "string") &&
-    (candidate.salient_memory === undefined || Array.isArray(candidate.salient_memory))
+    (candidate.salient_memory === undefined || Array.isArray(candidate.salient_memory)) &&
+    (candidate.session_id === undefined || typeof candidate.session_id === "string") &&
+    (candidate.debug === undefined || typeof candidate.debug === "boolean")
   );
 };
 
@@ -119,7 +98,7 @@ const isValidSalientMoment = (value: unknown): value is SalientMoment => {
   );
 };
 
-const TOP_K_SALIENCE = isLargeModelExpandedContext() ? 12 : 8;
+const TOP_K_SALIENCE = isLargeModelExpandedContext() ? 24 : 8;
 
 const scoreSalientMoments = (moments: SalientMoment[]): SalientMoment[] => {
   const now = Date.now();
@@ -139,200 +118,276 @@ const scoreSalientMoments = (moments: SalientMoment[]): SalientMoment[] => {
     .map((entry) => entry.moment);
 };
 
-const resolveGroqApiKey = (request: Request) =>
-  request.headers.get("x-groq-api-key") ??
-  process.env.GROQ_API_KEY ??
-  process.env.NEXT_PUBLIC_GROQ_API_KEY;
+const SSE_HEADERS = {
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "X-Accel-Buffering": "no",
+};
+
+const encodeFrame = (encoder: TextEncoder, event: SuggestionStreamEvent): Uint8Array =>
+  encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+
+const errorStream = (event: SuggestionStreamEvent, status: number): Response => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encodeFrame(encoder, event));
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: SSE_HEADERS,
+    status,
+  });
+};
 
 export async function POST(request: Request) {
   const timestamp = new Date().toISOString();
+  const requestId = crypto.randomUUID();
+  const requestStartedAt = Date.now();
   const payload: unknown = await request.json();
 
-  console.warn("[TwinMind][suggestions][route][reached]", {
-    has_groq_header: Boolean(request.headers.get("x-groq-api-key")),
-    timestamp,
-  });
+  console.warn("[TwinMind][suggestions][route][reached]", { timestamp });
 
   if (!isSuggestionsRequest(payload)) {
-    console.warn("[TwinMind][suggestions][route][invalid-payload]", {
-      timestamp,
-    });
-    return NextResponse.json(
-      buildResponse({
-        error: "Invalid suggestions payload.",
-        success: false,
-        suggestions: [],
-        timestamp,
-      }),
-      { status: 400 },
+    console.warn("[TwinMind][suggestions][route][invalid-payload]", { timestamp });
+    return errorStream(
+      { type: "error", message: "Invalid suggestions payload.", code: "invalid_payload" },
+      400,
     );
   }
+
+  const serverGroqKey = getServerGroqKey();
+
+  if (!serverGroqKey) {
+    return errorStream(
+      { type: "error", message: SERVER_GROQ_KEY_MISSING_MESSAGE, code: "missing_key" },
+      500,
+    );
+  }
+
+  let resolvedApiKey: string;
 
   try {
-    const resolvedApiKey = validateGroqApiKey(resolveGroqApiKey(request) ?? "");
-
-    console.warn("[TwinMind][suggestions][route][validated]", {
-      has_salient_memory:
-        Array.isArray(payload.salient_memory) && payload.salient_memory.length > 0,
-      has_verbatim_recent: Boolean(payload.verbatim_recent?.trim()),
-      meeting_type: payload.meeting_type,
-      conversation_stage: payload.conversation_stage,
-      provider_mode: process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_API_KEY
-        ? "azure-large-model"
-        : "groq-only",
-      transcript_chunk_length: payload.transcript_chunk.length,
-    });
-
-    initializeGroqClient(resolvedApiKey);
-
-    let salientMemoryRendered: string | undefined;
-
-    if (Array.isArray(payload.salient_memory) && payload.salient_memory.length > 0) {
-      const validMoments = payload.salient_memory.filter(isValidSalientMoment);
-
-      if (validMoments.length > 0) {
-        const top8 = scoreSalientMoments(validMoments);
-        salientMemoryRendered = renderSalientMemory(top8);
-      }
-    }
-
-    const normalizedPayload: SuggestionsRequest = {
-      ...payload,
-      rolling_summary: typeof payload.rolling_summary === "string"
-        ? payload.rolling_summary
-        : renderRollingSummary(payload.rolling_summary ?? null),
-    };
-
-    const { suggestions, meta } = await generateSuggestions(
-      normalizedPayload,
-      salientMemoryRendered,
-    );
-
-    let filteredSuggestions = suggestions;
-    let groundingAudit: Array<{ id: string; grounded: boolean; score: number }> | undefined;
-
-    if (process.env.STRICT_GROUNDING === "1") {
-      const auditResult = await auditGrounding(resolvedApiKey, {
-        suggestions,
-        verbatimRecent: payload.verbatim_recent ?? "",
-      });
-
-      if (auditResult.results.length > 0) {
-        groundingAudit = auditResult.results.map(({ grounded, id, score }) => ({
-          id,
-          grounded,
-          score,
-        }));
-
-        const passingIds = new Set(
-          auditResult.results
-            .filter((result) => result.grounded && result.score > 1)
-            .map((result) => result.id),
-        );
-        const survivors = suggestions.filter((suggestion) => passingIds.has(suggestion.id));
-
-        if (survivors.length > 0 && survivors.length < suggestions.length) {
-          filteredSuggestions = survivors;
-        }
-      }
-    }
-
-    return NextResponse.json(
-      buildResponse({
-        success: true,
-        suggestions: filteredSuggestions,
-        meta: groundingAudit
-          ? {
-              ...meta,
-              grounding_audit: groundingAudit,
-            }
-          : meta,
-        timestamp,
-      }),
-    );
+    resolvedApiKey = validateGroqApiKey(serverGroqKey);
   } catch (error) {
-    console.error("[TwinMind][suggestions][route][error]", {
-      message: error instanceof Error ? error.message : String(error),
-      name: error instanceof Error ? error.name : "unknown",
-      status: error instanceof OpenAI.APIError || error instanceof Groq.APIError ? error.status : undefined,
-      timestamp,
-    });
-
     if (error instanceof APIKeyError) {
-      return NextResponse.json(
-        buildResponse({
-          error: error.message,
-          success: false,
-          suggestions: [],
-          timestamp,
-        }),
-        { status: 401 },
+      return errorStream(
+        { type: "error", message: error.message, code: "invalid_key" },
+        401,
       );
     }
-
-    if (error instanceof TimeoutError) {
-      return NextResponse.json(
-        buildResponse({
-          error: error.message,
-          success: false,
-          suggestions: [],
-          timestamp,
-        }),
-        { status: 504 },
-      );
-    }
-
-    if (error instanceof Groq.APIError || error instanceof OpenAI.APIError) {
-      if (error.status === 401) {
-        return NextResponse.json(
-          buildResponse({
-            error: "Invalid API key",
-            success: false,
-            suggestions: [],
-            timestamp,
-          }),
-          { status: 401 },
-        );
-      }
-
-      if (error.status === 429) {
-        return NextResponse.json(
-          buildResponse({
-            error: "Rate limit hit",
-            success: false,
-            suggestions: [],
-            timestamp,
-          }),
-          { status: 429 },
-        );
-      }
-
-      if (error.status === 408 || error.name === "APITimeoutError") {
-        return NextResponse.json(
-          buildResponse({
-            error: "Request timeout",
-            success: false,
-            suggestions: [],
-            timestamp,
-          }),
-          { status: 504 },
-        );
-      }
-    }
-
-    const errorMessage =
-      error instanceof SuggestionGenerationError
-        ? error.message
-        : "Failed to generate suggestions. Check API key.";
-
-    return NextResponse.json(
-      buildResponse({
-        error: errorMessage,
-        success: false,
-        suggestions: [],
-        timestamp,
-      }),
-      { status: 500 },
+    return errorStream(
+      { type: "error", message: "Failed to validate API key.", code: "invalid_key" },
+      401,
     );
   }
+
+  console.warn("[TwinMind][suggestions][route][validated]", {
+    has_salient_memory:
+      Array.isArray(payload.salient_memory) && payload.salient_memory.length > 0,
+    has_verbatim_recent: Boolean(payload.verbatim_recent?.trim()),
+    meeting_type: payload.meeting_type,
+    conversation_stage: payload.conversation_stage,
+    provider_mode:
+      process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_API_KEY
+        ? "azure-large-model"
+        : "groq-only",
+    transcript_chunk_length: payload.transcript_chunk.length,
+  });
+
+  let salientMemoryRendered: string | undefined;
+
+  if (Array.isArray(payload.salient_memory) && payload.salient_memory.length > 0) {
+    const validMoments = payload.salient_memory.filter(isValidSalientMoment);
+
+    if (validMoments.length > 0) {
+      const top = scoreSalientMoments(validMoments);
+      salientMemoryRendered = renderSalientMemory(top);
+    }
+  }
+
+  const normalizedPayload: SuggestionsRequest = {
+    ...payload,
+    rolling_summary:
+      typeof payload.rolling_summary === "string"
+        ? payload.rolling_summary
+        : renderRollingSummary(payload.rolling_summary ?? null),
+  };
+
+  const encoder = new TextEncoder();
+  const clientAbort = request.signal;
+  const upstreamAbortController = new AbortController();
+  let disconnectLogged = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let closed = false;
+
+      const logDisconnect = () => {
+        if (disconnectLogged) {
+          return;
+        }
+
+        disconnectLogged = true;
+        console.info("[suggestions][server] client disconnected mid-stream", {
+          request_id: requestId,
+          elapsed_ms: Date.now() - requestStartedAt,
+        });
+      };
+
+      const isDisconnectError = (error: unknown) =>
+        clientAbort.aborted ||
+        (typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          (error as { code?: unknown }).code === "ECONNRESET") ||
+        (error instanceof DOMException && error.name === "AbortError") ||
+        (error instanceof Error && error.name === "AbortError");
+
+      const safeEnqueue = (event: SuggestionStreamEvent) => {
+        if (closed || clientAbort.aborted || upstreamAbortController.signal.aborted) {
+          return;
+        }
+        try {
+          controller.enqueue(encodeFrame(encoder, event));
+        } catch (error) {
+          if (isDisconnectError(error)) {
+            logDisconnect();
+            closed = true;
+            return;
+          }
+          closed = true;
+          throw error;
+        }
+      };
+      const safeClose = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          // Already closed by the runtime.
+        }
+      };
+
+      const onClientAbort = () => {
+        if (!upstreamAbortController.signal.aborted) {
+          upstreamAbortController.abort();
+        }
+        logDisconnect();
+        safeClose();
+      };
+
+      clientAbort.addEventListener("abort", onClientAbort);
+      if (clientAbort.aborted) {
+        onClientAbort();
+        return;
+      }
+
+      try {
+        await generateSuggestionsPipeline(
+          resolvedApiKey,
+          normalizedPayload,
+          salientMemoryRendered,
+          {
+            onGrounding: (grounding) => {
+              safeEnqueue({
+                type: "grounding",
+                entities_found: grounding.entities_found,
+                entities: grounding.entities,
+                searches_used: grounding.searches_used,
+                searches_remaining: grounding.searches_remaining,
+                cache_hits: grounding.cache_hits,
+                facts_count: grounding.facts_count,
+                ...(grounding.skipped_reason ? { skipped_reason: grounding.skipped_reason } : {}),
+              });
+            },
+            onMeta: (meta) => {
+              safeEnqueue({
+                type: "meta",
+                batch_id: meta.batch_id,
+                generated_at: meta.generated_at,
+                meeting_type: meta.meeting_type,
+                conversation_stage: meta.conversation_stage,
+              });
+            },
+            onCritiqueStarting: (candidateCount) => {
+              safeEnqueue({
+                type: "critique_starting",
+                candidate_count: candidateCount,
+              });
+            },
+            onCard: (suggestion, index, opts) => {
+              safeEnqueue({
+                type: "card",
+                index,
+                suggestion,
+                ...(opts?.replace ? { replace: true } : {}),
+              });
+            },
+            onRetrying: (reason) => {
+              safeEnqueue({ type: "retrying", reason });
+            },
+            onDebug: (pipeline) => {
+              safeEnqueue({ type: "debug", pipeline });
+            },
+            onDone: (summary) => {
+              safeEnqueue({
+                type: "done",
+                batch_id: summary.batch_id,
+                total_cards: summary.total_cards,
+                critique_used: summary.critique_used,
+                retry_fired: summary.retry_fired,
+                meta: summary.meta,
+              });
+            },
+            onError: (message, code) => {
+              safeEnqueue({ type: "error", message, code });
+            },
+          },
+          { signal: upstreamAbortController.signal, debug: payload.debug === true },
+        );
+      } catch (error) {
+        if (error instanceof PipelineAbortedError || isDisconnectError(error)) {
+          logDisconnect();
+          return;
+        }
+        console.error("[TwinMind][suggestions][route][error]", {
+          message: error instanceof Error ? error.message : String(error),
+          name: error instanceof Error ? error.name : "unknown",
+          request_id: requestId,
+          timestamp,
+        });
+        safeEnqueue({
+          type: "error",
+          message:
+            error instanceof Error ? error.message : "Failed to generate suggestions.",
+          code: "unknown",
+        });
+      } finally {
+        clientAbort.removeEventListener("abort", onClientAbort);
+        if (!upstreamAbortController.signal.aborted) {
+          upstreamAbortController.abort();
+        }
+        safeClose();
+      }
+    },
+    cancel() {
+      if (!upstreamAbortController.signal.aborted) {
+        upstreamAbortController.abort();
+      }
+      if (clientAbort.aborted && !disconnectLogged) {
+        disconnectLogged = true;
+        console.info("[suggestions][server] client disconnected mid-stream", {
+          request_id: requestId,
+          elapsed_ms: Date.now() - requestStartedAt,
+        });
+      }
+    },
+  });
+
+  return new Response(stream, { headers: SSE_HEADERS });
 }

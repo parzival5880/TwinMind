@@ -5,10 +5,10 @@ import {
   APIKeyError,
   ChatGenerationError,
   TimeoutError,
-  initializeGroqClient,
   streamDetailedAnswer,
   validateGroqApiKey,
 } from "@/lib/groq-client";
+import { getServerGroqKey, SERVER_GROQ_KEY_MISSING_MESSAGE } from "@/lib/server-groq-key";
 import type {
   ChatMessage,
   ChatRequest,
@@ -186,11 +186,6 @@ const buildResponse = ({
   timestamp,
 });
 
-const resolveGroqApiKey = (request: Request) =>
-  request.headers.get("x-groq-api-key") ??
-  process.env.GROQ_API_KEY ??
-  process.env.NEXT_PUBLIC_GROQ_API_KEY;
-
 export async function POST(request: Request) {
   const timestamp = new Date().toISOString();
   const payload: unknown = await request.json();
@@ -208,11 +203,23 @@ export async function POST(request: Request) {
   }
 
   try {
-    const resolvedApiKey = validateGroqApiKey(resolveGroqApiKey(request) ?? "");
+    const serverGroqKey = getServerGroqKey();
 
-    initializeGroqClient(resolvedApiKey);
+    if (!serverGroqKey) {
+      return NextResponse.json(
+        buildResponse({
+          error: SERVER_GROQ_KEY_MISSING_MESSAGE,
+          message: "",
+          success: false,
+          timestamp,
+        }),
+        { status: 500 },
+      );
+    }
+
+    const resolvedApiKey = validateGroqApiKey(serverGroqKey);
     const candidate = payload as Record<string, unknown>;
-    const completionStream = await streamDetailedAnswer({
+    const completionStream = await streamDetailedAnswer(resolvedApiKey, {
       message: payload.message,
       history: payload.history,
       suggestion: sanitizeSuggestion(candidate.suggestion),

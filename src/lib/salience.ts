@@ -1,6 +1,5 @@
 import Groq from "groq-sdk";
 import type {
-  SalientCategory,
   SalienceExtractionRaw,
   SalienceExtractionRequest,
   SalienceExtractionResponse,
@@ -12,15 +11,6 @@ const MIN_SLICE_LENGTH = 40;
 const MAX_NEW_MOMENTS = 4;
 const MAX_SUMMARY_WORDS = 15;
 const MAX_VERBATIM_WORDS = 25;
-
-const SALIENT_CATEGORIES: SalientCategory[] = [
-  "claim",
-  "question",
-  "decision",
-  "commitment",
-  "objection",
-  "key_entity",
-];
 
 const EMPTY_RESPONSE: SalienceExtractionResponse = {
   new_moments: [],
@@ -45,32 +35,6 @@ Rules:
 - \`importance\`: integer 3 (notable), 4 (significant), 5 (critical — numbers, decisions, major claims). Never emit 1 or 2.
 - Resolution: mark an open moment as resolved ONLY if the new transcript explicitly answers a \`question\` or confirms a \`commitment\` is met. Do NOT mark \`claim\`, \`decision\`, \`objection\`, or \`key_entity\` as resolved via this endpoint.
 - Output maximum 4 new_moments per call.`;
-
-const salienceResponseSchema = {
-  type: "object",
-  properties: {
-    new_moments: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          category: { type: "string", enum: [...SALIENT_CATEGORIES] },
-          summary: { type: "string", minLength: 1, maxLength: 120 },
-          verbatim: { type: "string", minLength: 1, maxLength: 200 },
-          importance: { type: "integer", minimum: 3, maximum: 5 },
-        },
-        required: ["category", "summary", "verbatim", "importance"],
-        additionalProperties: false,
-      },
-    },
-    resolved_ids: {
-      type: "array",
-      items: { type: "string" },
-    },
-  },
-  required: ["new_moments", "resolved_ids"],
-  additionalProperties: false,
-} as const;
 
 const trimToWordLimit = (text: string, limit: number) => {
   const words = text.trim().split(/\s+/);

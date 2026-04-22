@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { initializeGroqClient, validateGroqApiKey } from "@/lib/groq-client";
+import { getServerGroqKey, SERVER_GROQ_KEY_MISSING_MESSAGE } from "@/lib/server-groq-key";
 import { updateRollingSummary } from "@/lib/summary";
 import type { RollingSummaryRequest, RollingSummaryResponse } from "@/lib/types";
 
@@ -13,11 +14,6 @@ const isRollingSummaryRequest = (value: unknown): value is RollingSummaryRequest
   return typeof candidate.full_transcript === "string";
 };
 
-const resolveGroqApiKey = (request: Request) =>
-  request.headers.get("x-groq-api-key") ??
-  process.env.GROQ_API_KEY ??
-  process.env.NEXT_PUBLIC_GROQ_API_KEY;
-
 export async function POST(request: Request) {
   const payload: unknown = await request.json();
 
@@ -27,7 +23,19 @@ export async function POST(request: Request) {
   }
 
   try {
-    const resolvedApiKey = validateGroqApiKey(resolveGroqApiKey(request) ?? "");
+    const serverGroqKey = getServerGroqKey();
+
+    if (!serverGroqKey) {
+      return NextResponse.json(
+        {
+          summary: null,
+          error: SERVER_GROQ_KEY_MISSING_MESSAGE,
+        },
+        { status: 500 },
+      );
+    }
+
+    const resolvedApiKey = validateGroqApiKey(serverGroqKey);
 
     initializeGroqClient(resolvedApiKey);
 

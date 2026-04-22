@@ -5,7 +5,6 @@ import type { RollingSummary, RollingSummaryResponse, TranscriptChunk } from "@/
 
 type UseRollingSummaryOptions = {
   enabled: boolean;
-  groqApiKey?: string;
   transcript: TranscriptChunk[];
 };
 
@@ -38,22 +37,16 @@ const buildTranscriptText = (chunks: TranscriptChunk[]) =>
 
 export function useRollingSummary({
   enabled,
-  groqApiKey,
   transcript,
 }: UseRollingSummaryOptions): UseRollingSummaryResult {
   const [rollingSummary, setRollingSummary] = useState<RollingSummary | null>(null);
   const summaryWatermarkRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
   const transcriptRef = useRef(transcript);
-  const groqApiKeyRef = useRef(groqApiKey);
 
   useEffect(() => {
     transcriptRef.current = transcript;
   }, [transcript]);
-
-  useEffect(() => {
-    groqApiKeyRef.current = groqApiKey;
-  }, [groqApiKey]);
 
   const updateSummary = useCallback(async () => {
     if (inFlightRef.current) {
@@ -80,12 +73,6 @@ export function useRollingSummary({
       return;
     }
 
-    const apiKey = groqApiKeyRef.current;
-
-    if (!apiKey) {
-      return;
-    }
-
     inFlightRef.current = true;
 
     try {
@@ -93,7 +80,6 @@ export function useRollingSummary({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-groq-api-key": apiKey,
         },
         body: JSON.stringify({
           full_transcript: buildTranscriptText(currentTranscript),

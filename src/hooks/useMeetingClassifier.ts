@@ -5,7 +5,6 @@ import type { TranscriptChunk } from "@/lib/types";
 
 type UseMeetingClassifierOptions = {
   enabled: boolean;
-  groqApiKey?: string;
   recordingDurationMs: number;
   transcript: TranscriptChunk[];
 };
@@ -28,7 +27,6 @@ const buildTranscriptString = (transcript: TranscriptChunk[]) =>
 
 export function useMeetingClassifier({
   enabled,
-  groqApiKey,
   recordingDurationMs,
   transcript,
 }: UseMeetingClassifierOptions): UseMeetingClassifierResult {
@@ -39,7 +37,7 @@ export function useMeetingClassifier({
   const inFlightRef = useRef(false);
 
   const classify = useCallback(async () => {
-    if (inFlightRef.current || !groqApiKey?.trim() || !transcriptString.trim()) {
+    if (inFlightRef.current || !transcriptString.trim()) {
       return;
     }
 
@@ -50,7 +48,6 @@ export function useMeetingClassifier({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-groq-api-key": groqApiKey,
         },
         body: JSON.stringify({
           transcript: transcriptString,
@@ -70,7 +67,7 @@ export function useMeetingClassifier({
     } finally {
       inFlightRef.current = false;
     }
-  }, [groqApiKey, transcriptString]);
+  }, [transcriptString]);
 
   useEffect(() => {
     if (!enabled || hasAutoClassifiedRef.current) {

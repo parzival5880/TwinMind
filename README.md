@@ -3,7 +3,7 @@
 ## TL;DR
 - TwinMind is a real-time meeting copilot: it listens to live mic audio, transcribes it, surfaces 3 context-aware suggestions every 30 seconds, and turns suggestions into grounded chat answers.
 - Stack: Next.js App Router, TypeScript, React, Tailwind, Groq Whisper Large V3, Groq `openai/gpt-oss-120b`, and `llama-3.1-8b-instant` for background summarization.
-- Default setup uses Groq for all models. Optionally set `AZURE_OPENAI_*` env vars to route `gpt-oss-120b` and `whisper-large-v3` to Azure AI Foundry during development; behavior and prompts are identical.
+- Default setup uses Groq for all models. Optionally set `AZURE_OPENAI_*` env vars to route `gpt-oss-120b` to Azure AI Foundry during development; Whisper and the 8B helpers stay on Groq.
 - Local run: clone, install, add a Groq key to `.env.local`, then `npm run dev`.
 - Deployed URL: [https://twinmind-two.vercel.app](https://twinmind-two.vercel.app)
 - Groq key: [https://console.groq.com](https://console.groq.com)
@@ -81,7 +81,7 @@ Measured on: Chicago, US, localhost, broadband connection. The missing transcrip
 - Suggestion streaming is not implemented yet; the current middle column waits for a validated full batch and uses skeleton cards during load.
 - Transcript quality still depends heavily on mic quality, room noise, and browser audio behavior.
 - No diarization means citations are time-grounded but not reliably speaker-grounded.
-- The app stores the Groq key in browser `localStorage`, which is acceptable for a prototype but not a production security model.
+- The app expects server-side env configuration for Groq/Azure keys; if those are missing, API routes fail fast with a deployment misconfiguration error.
 - The telemetry panel is real, but the README still needs a checked-in browser capture for transcription latency.
 
 ## Setup
@@ -91,7 +91,17 @@ git clone https://github.com/parzival5880/TwinMind.git
 cd TwinMind
 npm install
 cp .env.local.example .env.local
-# add NEXT_PUBLIC_GROQ_API_KEY=your_key_here
+# add GROQ_API_KEY=your_key_here
+# optional grounding:
+# TAVILY_API_KEY=your_tavily_key
+# TAVILY_ENABLED=true
+# MAX_TAVILY_SEARCHES_PER_SESSION=30
+# TAVILY_TIMEOUT_MS=2000
+# optional Azure large-model override:
+# AZURE_OPENAI_ENDPOINT=...
+# AZURE_OPENAI_API_KEY=...
+# AZURE_OPENAI_API_VERSION=2024-10-21
+# AZURE_OPENAI_DEPLOYMENT=gpt-oss-120b
 npm run dev
 # open http://localhost:3000
 ```
@@ -101,8 +111,8 @@ Deploy: import the repo into Vercel, set the same env vars, deploy.
 ## File Map
 
 - `src/app`: App Router pages plus API routes.
-- `src/components`: recorder, transcript, suggestions, chat, settings, toasts, telemetry UI.
-- `src/hooks`: client orchestration for audio, suggestions, chat, settings, telemetry, and summary state.
+- `src/components`: recorder, transcript, suggestions, chat, toasts, telemetry UI.
+- `src/hooks`: client orchestration for audio, suggestions, chat, telemetry, and summary state.
 - `src/lib`: prompts, Groq client, export helpers, telemetry store, VAD, shared types.
 - `scripts`: evaluation harness for repeatable scenario testing.
 - `public`: static assets.

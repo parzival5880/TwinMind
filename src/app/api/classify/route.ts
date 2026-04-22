@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { classifyMeeting } from "@/lib/classifier";
+import { getServerGroqKey, SERVER_GROQ_KEY_MISSING_MESSAGE } from "@/lib/server-groq-key";
 
 const buildResponse = ({
   confidence,
@@ -25,18 +26,13 @@ const isClassifyRequest = (value: unknown): value is { transcript: string } => {
   return typeof candidate.transcript === "string";
 };
 
-const resolveGroqApiKey = (request: Request) =>
-  request.headers.get("x-groq-api-key") ??
-  process.env.GROQ_API_KEY ??
-  process.env.NEXT_PUBLIC_GROQ_API_KEY;
-
 export async function POST(request: Request) {
-  const apiKey = resolveGroqApiKey(request);
+  const apiKey = getServerGroqKey();
 
   if (!apiKey?.trim()) {
     return NextResponse.json(
-      buildResponse({ error: "Missing API key" }),
-      { status: 401 },
+      buildResponse({ error: SERVER_GROQ_KEY_MISSING_MESSAGE }),
+      { status: 500 },
     );
   }
 

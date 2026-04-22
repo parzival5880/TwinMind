@@ -27,29 +27,6 @@ Output ONLY these fields: topic, stance, phase, tone, participants_heard.
 
 Never invent content. If unclear, use "unclear" for phase and "neutral" for tone.`;
 
-const rollingSummarySchema = {
-  type: "object",
-  properties: {
-    topic: { type: "string" },
-    stance: { type: "string" },
-    phase: {
-      type: "string",
-      enum: ["exploring", "converging", "deciding", "wrapping", "unclear"],
-    },
-    tone: {
-      type: "string",
-      enum: ["analytical", "tense", "aligned", "stalled", "exploratory", "neutral"],
-    },
-    participants_heard: {
-      type: "array",
-      maxItems: 5,
-      items: { type: "string" },
-    },
-  },
-  required: ["topic", "stance", "phase", "tone", "participants_heard"],
-  additionalProperties: false,
-} as const;
-
 const truncateTranscript = (value: string) => {
   const normalized = value.trim();
 

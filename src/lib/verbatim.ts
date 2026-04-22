@@ -2,9 +2,9 @@ import { isLargeModelExpandedContext } from "@/lib/llm-clients";
 import type { TranscriptChunk } from "@/lib/types";
 
 const VERBATIM_WINDOW_MS_TIGHT = 90_000;
-const VERBATIM_WINDOW_MS_EXPANDED = 120_000;
+const VERBATIM_WINDOW_MS_EXPANDED = 900_000;
 const VERBATIM_MAX_CHARS_TIGHT = 1600;
-const VERBATIM_MAX_CHARS_EXPANDED = 3200;
+const VERBATIM_MAX_CHARS_EXPANDED = 18000;
 
 const buildTranscriptString = (transcript: TranscriptChunk[]) =>
   transcript
