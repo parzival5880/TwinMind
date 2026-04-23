@@ -6,13 +6,10 @@ import {
   isLargeModelExpandedContext,
 } from "@/lib/llm-clients";
 import {
-  buildChatSystemPrompt,
   DEFAULT_CONTEXT_WINDOWS,
   buildSuggestionsPrompt,
 } from "@/lib/prompts";
 import type {
-  ChatRequest,
-  ChatMessage,
   Suggestion,
   SuggestionConviction,
   SuggestionMeta,
@@ -26,16 +23,6 @@ const GROQ_TRANSCRIPTION_TIMEOUT_MS = 15_000;
 // retry. The retry shares the same client, so one timeout spans both.
 const GROQ_SUGGESTIONS_TIMEOUT_MS_STANDARD = 12_000;
 const GROQ_SUGGESTIONS_TIMEOUT_MS_EXPANDED = 35_000;
-const GROQ_CHAT_TIMEOUT_MS_STANDARD = 25_000;
-const GROQ_CHAT_TIMEOUT_MS_EXPANDED = 45_000;
-const GROQ_KEY_VALIDATION_TIMEOUT_MS = 10_000;
-
-function getChatTimeoutMs(): number {
-  return isLargeModelExpandedContext()
-    ? GROQ_CHAT_TIMEOUT_MS_EXPANDED
-    : GROQ_CHAT_TIMEOUT_MS_STANDARD;
-}
-
 function getSuggestionsTimeoutMs(): number {
   return isLargeModelExpandedContext()
     ? GROQ_SUGGESTIONS_TIMEOUT_MS_EXPANDED
@@ -128,43 +115,6 @@ export const getGroqClient = () => {
   }
 
   return groqClient;
-};
-
-export const isClientInitialized = () => groqClient !== null;
-
-export const clearGroqClient = () => {
-  groqClient = null;
-};
-
-export const testGroqApiKey = async (apiKey: string): Promise<void> => {
-  const normalizedApiKey = validateGroqApiKey(apiKey);
-  const validationClient = new Groq({
-    apiKey: normalizedApiKey,
-    dangerouslyAllowBrowser: typeof window !== "undefined",
-    maxRetries: 0,
-    timeout: GROQ_KEY_VALIDATION_TIMEOUT_MS,
-  });
-
-  try {
-    await validationClient.models.list({
-      timeout: GROQ_KEY_VALIDATION_TIMEOUT_MS,
-      maxRetries: 0,
-    });
-  } catch (error) {
-    if (error instanceof Groq.AuthenticationError || error instanceof Groq.PermissionDeniedError) {
-      throw new APIKeyError("The Groq API key was rejected. Check the configured key and try again.");
-    }
-
-    if (error instanceof Groq.APIConnectionTimeoutError) {
-      throw new TimeoutError("Groq API key validation timed out. Try again in a moment.");
-    }
-
-    if (error instanceof Error) {
-      throw new APIKeyError(error.message || "Unable to validate the Groq API key.");
-    }
-
-    throw new APIKeyError("Unable to validate the Groq API key.");
-  }
 };
 
 const getAudioMimeType = (audioBlob: Blob) => audioBlob.type || "audio/webm";
@@ -420,7 +370,7 @@ const normalizeConviction = (value: unknown): SuggestionConviction =>
 const MISSING_EVIDENCE_QUOTE_PLACEHOLDER = "(no quote captured)";
 const MISSING_RATIONALE_PLACEHOLDER = "(model didn't provide rationale)";
 
-const clampFullContentToSentenceLimit = (fullContent: string, maxWords: number) => {
+export const clampFullContentToSentenceLimit = (fullContent: string, maxWords: number) => {
   const normalized = fullContent.trim();
   const sentences = normalized.match(/[^.!?…]+[.!?…]["')\]]*\s*/g);
 
@@ -458,8 +408,8 @@ export const validateSuggestions = (
   allowedUrls: Set<string> = new Set(),
   groundedFactsByUrl?: Map<string, { entity: string; fact: string; scope: string }>,
 ) => {
-  if (suggestions.length !== 3) {
-    throw new SuggestionGenerationError("Expected exactly 3 suggestions from the model.");
+  if (suggestions.length < 2) {
+    throw new SuggestionGenerationError("Expected at least 2 suggestions from the model.");
   }
 
   const uniqueTypes = new Set<Suggestion["type"]>();
@@ -482,13 +432,62 @@ export const validateSuggestions = (
 
     let normalizedFullContent = suggestion.full_content.trim();
     let fullContentWordCount = countWords(normalizedFullContent);
+    let rationale = suggestion.rationale.trim();
+
+    if (!rationale) {
+      rationale = MISSING_RATIONALE_PLACEHOLDER;
+      console.warn("[TwinMind][suggestions][validator] missing rationale", {
+        suggestion_id: suggestion.id,
+      });
+    }
+
+    if (rationale.length > 240) {
+      rationale = `${rationale.slice(0, 237).replace(/\s+\S*$/, "")}...`;
+      console.warn("[TwinMind][suggestions][validator] truncating long rationale", {
+        suggestion_id: suggestion.id,
+      });
+    }
+
+    let whyRelevant = suggestion.why_relevant.trim();
+
+    if (!whyRelevant) {
+      throw new SuggestionGenerationError("Suggestion why_relevant must be non-empty.");
+    }
+
+    if (whyRelevant.length > 150) {
+      // Truncate at word boundary instead of dropping the whole batch.
+      whyRelevant = whyRelevant.slice(0, 147).replace(/\s+\S*$/, "") + "...";
+      console.warn("[TwinMind][suggestions][validator] truncating long why_relevant", {
+        suggestion_id: suggestion.id,
+      });
+    }
 
     if (fullContentWordCount < 25) {
-      console.warn("[TwinMind][suggestions][validator] dropping short full_content", {
+      const paddingSegments = [rationale.trim(), whyRelevant.trim()].filter(
+        (segment): segment is string => Boolean(segment),
+      );
+
+      for (const segment of paddingSegments) {
+        if (fullContentWordCount >= 25) {
+          break;
+        }
+
+        normalizedFullContent = `${normalizedFullContent} ${segment}`.trim();
+        fullContentWordCount = countWords(normalizedFullContent);
+      }
+
+      console.warn("[TwinMind][suggestions][validator] padding short full_content", {
         suggestion_id: suggestion.id,
         word_count: fullContentWordCount,
       });
-      return;
+
+      if (fullContentWordCount < 15) {
+        console.warn("[TwinMind][suggestions][validator] dropping unrecoverably short full_content", {
+          suggestion_id: suggestion.id,
+          word_count: fullContentWordCount,
+        });
+        return;
+      }
     }
 
     if (fullContentWordCount > 200) {
@@ -529,36 +528,6 @@ export const validateSuggestions = (
       !normalizedVerbatim.includes(quoteText.toLowerCase())
     ) {
       return;
-    }
-
-    let rationale = suggestion.rationale.trim();
-
-    if (!rationale) {
-      rationale = MISSING_RATIONALE_PLACEHOLDER;
-      console.warn("[TwinMind][suggestions][validator] missing rationale", {
-        suggestion_id: suggestion.id,
-      });
-    }
-
-    if (rationale.length > 240) {
-      rationale = `${rationale.slice(0, 237).replace(/\s+\S*$/, "")}...`;
-      console.warn("[TwinMind][suggestions][validator] truncating long rationale", {
-        suggestion_id: suggestion.id,
-      });
-    }
-
-    let whyRelevant = suggestion.why_relevant.trim();
-
-    if (!whyRelevant) {
-      throw new SuggestionGenerationError("Suggestion why_relevant must be non-empty.");
-    }
-
-    if (whyRelevant.length > 150) {
-      // Truncate at word boundary instead of dropping the whole batch.
-      whyRelevant = whyRelevant.slice(0, 147).replace(/\s+\S*$/, "") + "...";
-      console.warn("[TwinMind][suggestions][validator] truncating long why_relevant", {
-        suggestion_id: suggestion.id,
-      });
     }
 
     const previewTokens = tokenizeSuggestionText(suggestion.preview);
@@ -625,7 +594,7 @@ export const validateSuggestions = (
     const fingerprint = `${suggestion.type}::${suggestion.preview.toLowerCase()}::${suggestion.full_content.toLowerCase()}`;
 
     if (uniqueFingerprints.has(fingerprint)) {
-      throw new SuggestionGenerationError("Duplicate suggestions were generated.");
+      return;
     }
 
     uniqueTypes.add(suggestion.type);
@@ -643,7 +612,7 @@ export const validateSuggestions = (
 
   if (validSuggestions.length === 0) {
     throw new SuggestionGenerationError(
-      "All suggestions failed word-count validation (target 70-140 words).",
+      "All suggestions failed length validation (full_content 25-200 words).",
     );
   }
 
@@ -903,159 +872,6 @@ export const generateSuggestions = async (
     }
 
     throw new SuggestionGenerationError("Failed to generate suggestions.");
-  }
-};
-
-const buildChatHistoryContext = (chatHistory: ChatMessage[]) => {
-  const recentMessages = chatHistory.slice(-8);
-
-  if (recentMessages.length === 0) {
-    return "No prior chat history.";
-  }
-
-  return recentMessages
-    .map((message) => {
-      const timestamp = message.timestamp instanceof Date
-        ? message.timestamp.toISOString()
-        : String(message.timestamp);
-
-      return `[${timestamp}] ${message.role.toUpperCase()}: ${message.content}`;
-    })
-    .join("\n");
-};
-
-const buildDetailedAnswerMessages = (request: ChatRequest) => {
-  const chatHistoryContext = buildChatHistoryContext(request.history.slice(-8));
-  const trimmedUserMessage = request.message.trim();
-  const systemPrompt = buildChatSystemPrompt(request.context, request.suggestion);
-
-  return {
-    messages: [
-      {
-        role: "system" as const,
-        content: systemPrompt,
-      },
-      {
-        role: "user" as const,
-        content: `RECENT CHAT HISTORY:
-${chatHistoryContext}
-
-USER MESSAGE:
-${trimmedUserMessage}`,
-      },
-    ],
-  };
-};
-
-export const streamDetailedAnswer = async (apiKey: string, request: ChatRequest) => {
-  const client = getLargeModelClient(apiKey);
-  const { messages } = buildDetailedAnswerMessages(request);
-  const chatMaxTokens = isLargeModelExpandedContext() ? 8000 : 2500;
-
-  try {
-    return await client.chat.completions.create(
-      {
-        model: getLargeModelName(),
-        messages,
-        response_format: {
-          type: "text",
-        },
-        temperature: 0.3,
-        max_tokens: chatMaxTokens,
-        stream: true,
-      },
-      {
-        timeout: getChatTimeoutMs(),
-        maxRetries: 0,
-      },
-    );
-  } catch (error) {
-    if (error instanceof APIKeyError || error instanceof TimeoutError || error instanceof ChatGenerationError) {
-      throw error;
-    }
-
-    if (error instanceof Groq.APIError || error instanceof OpenAI.APIError) {
-      throw error;
-    }
-
-    if (error instanceof Groq.AuthenticationError || error instanceof Groq.PermissionDeniedError) {
-      throw new APIKeyError("The Groq API key was rejected. Check the configured key and try again.");
-    }
-
-    if (error instanceof Groq.APIConnectionTimeoutError) {
-      throw new TimeoutError("Detailed answer generation timed out after 25 seconds.");
-    }
-
-    if (error instanceof Error) {
-      throw new ChatGenerationError(error.message || "Failed to generate a detailed answer.");
-    }
-
-    throw new ChatGenerationError("Failed to generate a detailed answer.");
-  }
-};
-
-export const generateDetailedAnswer = async ({
-  apiKey,
-  context,
-  history,
-  message,
-  suggestion,
-}: ChatRequest & { apiKey: string }): Promise<string> => {
-  const client = getLargeModelClient(apiKey);
-  const { messages } = buildDetailedAnswerMessages({
-    context,
-    history,
-    message,
-    suggestion,
-  });
-  const chatMaxTokens = isLargeModelExpandedContext() ? 8000 : 2500;
-
-  try {
-    const completion = await client.chat.completions.create(
-      {
-        model: getLargeModelName(),
-        messages,
-        response_format: {
-          type: "text",
-        },
-        temperature: 0.3,
-        max_tokens: chatMaxTokens,
-      },
-      {
-        timeout: getChatTimeoutMs(),
-        maxRetries: 0,
-      },
-    );
-
-    const content = extractAssistantText(completion.choices[0]?.message);
-
-    if (!content) {
-      throw new ChatGenerationError("Failed to generate a detailed answer.");
-    }
-
-    return content;
-  } catch (error) {
-    if (error instanceof APIKeyError || error instanceof TimeoutError || error instanceof ChatGenerationError) {
-      throw error;
-    }
-
-    if (error instanceof Groq.APIError || error instanceof OpenAI.APIError) {
-      throw error;
-    }
-
-    if (error instanceof Groq.AuthenticationError || error instanceof Groq.PermissionDeniedError) {
-      throw new APIKeyError("The Groq API key was rejected. Check the configured key and try again.");
-    }
-
-    if (error instanceof Groq.APIConnectionTimeoutError) {
-      throw new TimeoutError("Detailed answer generation timed out after 25 seconds.");
-    }
-
-    if (error instanceof Error) {
-      throw new ChatGenerationError(error.message || "Failed to generate a detailed answer.");
-    }
-
-    throw new ChatGenerationError("Failed to generate a detailed answer.");
   }
 };
 

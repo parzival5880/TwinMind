@@ -36,6 +36,7 @@ import {
   extractMetaBlock,
 } from "@/lib/streaming-json";
 import {
+  clampFullContentToSentenceLimit,
   coerceStreamedCard,
   extractAssistantText,
   extractJsonObject,
@@ -57,7 +58,7 @@ import type {
   SuggestionsRequest,
 } from "@/lib/types";
 
-const CANDIDATE_BUDGET_THRESHOLD_MS = 14_000;
+const CANDIDATE_BUDGET_THRESHOLD_MS = 18_000;
 const NEAR_DUP_JACCARD_THRESHOLD = 0.72;
 
 const isAbortLikeError = (error: unknown, abortSignal?: AbortSignal) =>
@@ -251,8 +252,15 @@ const jaccard = (a: Set<string>, b: Set<string>) => {
   return union === 0 ? 0 : intersection / union;
 };
 
+const countWords = (value: string) =>
+  value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+
 const evaluateDiversity = (
   suggestions: Suggestion[],
+  avoidPhrases: string[] = [],
 ): { ok: true } | { ok: false; reason: string } => {
   if (suggestions.length !== 3) {
     return { ok: false, reason: "Expected exactly 3 selections." };
@@ -273,6 +281,17 @@ const evaluateDiversity = (
     for (let j = i + 1; j < previewTokens.length; j += 1) {
       if (jaccard(previewTokens[i], previewTokens[j]) >= NEAR_DUP_JACCARD_THRESHOLD) {
         return { ok: false, reason: "Two selected previews are near-duplicates." };
+      }
+    }
+  }
+
+  const avoidPhraseTokens = avoidPhrases
+    .map((phrase) => tokenize(phrase))
+    .filter((tokenSet) => tokenSet.size > 0);
+  for (const previewTokenSet of previewTokens) {
+    for (const avoidTokenSet of avoidPhraseTokens) {
+      if (jaccard(previewTokenSet, avoidTokenSet) >= 0.65) {
+        return { ok: false, reason: "repeats recent batch phrase" };
       }
     }
   }
@@ -575,23 +594,24 @@ const runCritiqueStream = async (
 // Fallback: emit raw call-A candidates as Suggestion cards
 // ---------------------------------------------------------------------------
 
-const projectCandidatesToSuggestions = (candidates: SuggestionCandidate[]): Suggestion[] =>
-  candidates.slice(0, 3).map((candidate, index) =>
-    normalizeSuggestion(
-      {
-        type: candidate.type,
-        conviction: normalizeConviction(candidate.conviction),
-        preview: candidate.preview,
-        full_content: candidate.full_content,
-        evidence_quote: candidate.evidence_quote,
-        rationale: candidate.rationale,
-        source_url: candidate.source_url,
-        why_relevant: candidate.rationale.slice(0, 150),
-        trigger: candidate.rationale,
-      },
-      index,
-    ),
+const projectCandidateToSuggestion = (candidate: SuggestionCandidate, index: number): Suggestion =>
+  normalizeSuggestion(
+    {
+      type: candidate.type,
+      conviction: normalizeConviction(candidate.conviction),
+      preview: candidate.preview,
+      full_content: candidate.full_content,
+      evidence_quote: candidate.evidence_quote,
+      rationale: candidate.rationale,
+      source_url: candidate.source_url,
+      why_relevant: candidate.rationale.slice(0, 150),
+      trigger: candidate.rationale,
+    },
+    index,
   );
+
+const projectCandidatesToSuggestions = (candidates: SuggestionCandidate[]): Suggestion[] =>
+  candidates.slice(0, 3).map((candidate, index) => projectCandidateToSuggestion(candidate, index));
 
 const emitFallbackCards = (
   candidates: SuggestionCandidate[],
@@ -621,10 +641,93 @@ const emitFallbackCards = (
     return [];
   }
 
+  if (suggestions.length < 3) {
+    return [];
+  }
+
   suggestions.forEach((suggestion, index) => {
     handlers.onCard(suggestion, index, replace ? { replace: true } : undefined);
   });
   return suggestions;
+};
+
+const emitFallbackCardsRelaxed = (
+  candidates: SuggestionCandidate[],
+  allowedUrls: Set<string>,
+  groundedFacts: GroundedFact[],
+  handlers: PipelineHandlers,
+  { replace }: { replace: boolean },
+): Suggestion[] => {
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const sanitizeLenient = (suggestion: Suggestion): Suggestion | null => {
+    let fullContent = suggestion.full_content.trim();
+    const rationale = suggestion.rationale.trim();
+    const whyRelevant = suggestion.why_relevant.trim();
+    const sourceUrl = suggestion.source_url?.trim();
+
+    if (countWords(fullContent) > 200) {
+      fullContent = clampFullContentToSentenceLimit(fullContent, 200);
+    }
+
+    for (const segment of [rationale, whyRelevant]) {
+      if (!segment || countWords(fullContent) >= 25) {
+        continue;
+      }
+      fullContent = `${fullContent} ${segment}`.trim();
+    }
+
+    if (countWords(fullContent) < 15) {
+      return null;
+    }
+
+    const normalizedSourceUrl =
+      sourceUrl && allowedUrls.has(sourceUrl) ? sourceUrl : undefined;
+
+    if (suggestion.type === "fact_check" && !normalizedSourceUrl) {
+      return null;
+    }
+
+    return {
+      ...suggestion,
+      full_content: fullContent,
+      evidence_quote: suggestion.evidence_quote
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 15)
+        .join(" "),
+      preview: suggestion.preview.trim(),
+      rationale,
+      why_relevant: whyRelevant,
+      source_url: normalizedSourceUrl,
+    };
+  };
+
+  const sanitizedSuggestions: Suggestion[] = [];
+
+  for (const [index, candidate] of candidates.entries()) {
+    const suggestion = sanitizeLenient(projectCandidateToSuggestion(candidate, index));
+
+    if (!suggestion) {
+      continue;
+    }
+
+    sanitizedSuggestions.push(suggestion);
+
+    if (sanitizedSuggestions.length === 3) {
+      break;
+    }
+  }
+
+  const hydratedSuggestions = hydrateSuggestionSources(sanitizedSuggestions, groundedFacts);
+  hydratedSuggestions.forEach((suggestion, index) => {
+    handlers.onCard(suggestion, index, replace ? { replace: true } : undefined);
+  });
+
+  return hydratedSuggestions;
 };
 
 // ---------------------------------------------------------------------------
@@ -683,15 +786,12 @@ export const generateSuggestionsPipeline = async (
     let callBms: number | undefined;
 
     const startA = Date.now();
-    let groundingResult;
-    try {
-      groundingResult = await fetchGroundingFor(
-        apiKey,
-        payload.verbatim_recent || payload.transcript_chunk || payload.full_transcript,
-        payload.session_id || "default",
-        abortSignal,
-      );
-    } catch (error) {
+    const groundingPromise = fetchGroundingFor(
+      apiKey,
+      payload.verbatim_recent || payload.transcript_chunk || payload.full_transcript,
+      payload.session_id || "default",
+      abortSignal,
+    ).catch((error) => {
       if (isAbortLikeError(error, abortSignal)) {
         throw error;
       }
@@ -699,7 +799,7 @@ export const generateSuggestionsPipeline = async (
         message: error instanceof Error ? error.message : String(error),
         session_id: payload.session_id || "default",
       });
-      groundingResult = {
+      return {
         facts: [],
         entities: [],
         searches_used: 0,
@@ -708,33 +808,22 @@ export const generateSuggestionsPipeline = async (
         entities_found: 0,
         skipped_reason: "no_entities" as const,
       };
-    }
-    const allowedUrls = new Set(groundingResult.facts.map((fact) => fact.url));
-    const groundedFactsByUrl = new Map(
-      groundingResult.facts.map((fact) => [
-        fact.url,
-        { entity: fact.entity, fact: fact.fact, scope: fact.scope },
-      ]),
+    });
+    const candidatePromise = runCandidateGeneration(
+      apiKey,
+      payload,
+      salientMemoryRendered,
+      [],
+      abortSignal,
     );
-    const groundingDebug: SuggestionGroundingDebug = {
-      entities_found: groundingResult.entities_found ?? 0,
-      entities: groundingResult.entities,
-      searches_used: groundingResult.searches_used,
-      searches_remaining: groundingResult.searches_remaining,
-      cache_hits: groundingResult.cache_hits,
-      facts_count: groundingResult.facts.length,
-      skipped_reason: groundingResult.skipped_reason,
-    };
-    handlers.onGrounding(groundingDebug);
+    let groundingResult;
 
     try {
-      const result = await runCandidateGeneration(
-        apiKey,
-        payload,
-        salientMemoryRendered,
-        groundingResult.facts,
-        abortSignal,
-      );
+      const [resolvedGroundingResult, result] = await Promise.all([
+        groundingPromise,
+        candidatePromise,
+      ]);
+      groundingResult = resolvedGroundingResult;
       callAms = Date.now() - startA;
       candidates = result.candidates;
       preliminaryMeta = result.meta;
@@ -753,6 +842,24 @@ export const generateSuggestionsPipeline = async (
       return;
     }
 
+    const allowedUrls = new Set(groundingResult.facts.map((fact) => fact.url));
+    const groundedFactsByUrl = new Map(
+      groundingResult.facts.map((fact) => [
+        fact.url,
+        { entity: fact.entity, fact: fact.fact, scope: fact.scope },
+      ]),
+    );
+    const groundingDebug: SuggestionGroundingDebug = {
+      entities_found: groundingResult.entities_found ?? 0,
+      entities: groundingResult.entities,
+      searches_used: groundingResult.searches_used,
+      searches_remaining: groundingResult.searches_remaining,
+      cache_hits: groundingResult.cache_hits,
+      facts_count: groundingResult.facts.length,
+      skipped_reason: groundingResult.skipped_reason,
+    };
+    handlers.onGrounding(groundingDebug);
+
     handlers.onMeta({
       batch_id: batchId,
       generated_at: generatedAt,
@@ -768,7 +875,7 @@ export const generateSuggestionsPipeline = async (
         call_a_ms: callAms,
         threshold_ms: CANDIDATE_BUDGET_THRESHOLD_MS,
       });
-      const finals = emitFallbackCards(
+      let finals = emitFallbackCards(
         candidates,
         payload.verbatim_recent,
         allowedUrls,
@@ -777,6 +884,15 @@ export const generateSuggestionsPipeline = async (
         handlers,
         { replace: false },
       );
+      if (finals.length === 0) {
+        finals = emitFallbackCardsRelaxed(
+          candidates,
+          allowedUrls,
+          groundingResult.facts,
+          handlers,
+          { replace: false },
+        );
+      }
       if (debug) {
         handlers.onDebug({
           candidates,
@@ -851,7 +967,7 @@ export const generateSuggestionsPipeline = async (
       critiqueSelections = critiqueResult.suggestions;
       critiqueMeta = critiqueResult.meta;
 
-      const diversity = evaluateDiversity(critiqueSelections);
+      const diversity = evaluateDiversity(critiqueSelections, avoidPhrasesForCritique);
       if (!diversity.ok) {
         console.warn("[suggestions] critique diversity violation — retrying once", {
           reason: diversity.reason,
@@ -874,7 +990,7 @@ export const generateSuggestionsPipeline = async (
         critiqueSelections = retryResult.suggestions;
         critiqueMeta = retryResult.meta;
 
-        const retryDiversity = evaluateDiversity(critiqueSelections);
+        const retryDiversity = evaluateDiversity(critiqueSelections, avoidPhrasesForCritique);
         if (!retryDiversity.ok) {
           console.warn(
             "[suggestions] critique retry still violated diversity — falling back to raw candidates",
@@ -890,6 +1006,15 @@ export const generateSuggestionsPipeline = async (
             handlers,
             { replace: true },
           );
+          if (critiqueSelections.length === 0) {
+            critiqueSelections = emitFallbackCardsRelaxed(
+              candidates,
+              allowedUrls,
+              groundingResult.facts,
+              handlers,
+              { replace: true },
+            );
+          }
         }
       }
   } catch (error) {
@@ -915,6 +1040,17 @@ export const generateSuggestionsPipeline = async (
           replace: critiqueSelections.length > 0,
         },
       );
+      if (critiqueSelections.length === 0) {
+        critiqueSelections = emitFallbackCardsRelaxed(
+          candidates,
+          allowedUrls,
+          groundingResult.facts,
+          handlers,
+          {
+            replace: critiqueSelections.length > 0,
+          },
+        );
+      }
     } catch (fallbackError) {
       console.warn("[suggestions][pipeline] fallback emission failed, skipping fallback", {
         reason: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, memo, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ChatMessage, Suggestion, TranscriptChunk } from "@/lib/types";
 
 type ChatPanelProps = {
@@ -16,6 +16,9 @@ type ChatPanelProps = {
 
 const MAX_MESSAGE_LENGTH = 500;
 const CITATION_PATTERN = /\[(\d{2}:\d{2})\]\s*["“”]([^"“”]+)["“”]/g;
+const CODE_BLOCK_PATTERN = /```([a-z0-9_-]+)?\n([\s\S]*?)```/gi;
+const INLINE_MARKDOWN_PATTERN =
+  /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*](?:[\s\S]*?[^*])?)\*\*|\*([^*\n](?:[\s\S]*?[^*\n])?)\*/g;
 
 const suggestionTypeLabel = (type: Suggestion["type"]) => {
   switch (type) {
@@ -65,6 +68,139 @@ const parseAssistantMessage = (content: string) => {
   };
 };
 
+const splitAssistantBodySegments = (content: string) => {
+  const segments: Array<
+    | { type: "text"; content: string }
+    | { type: "code"; content: string; language?: string }
+  > = [];
+  let lastIndex = 0;
+
+  for (const match of content.matchAll(CODE_BLOCK_PATTERN)) {
+    const start = match.index ?? 0;
+
+    if (start > lastIndex) {
+      segments.push({
+        type: "text",
+        content: content.slice(lastIndex, start),
+      });
+    }
+
+    segments.push({
+      type: "code",
+      language: match[1]?.trim() || undefined,
+      content: match[2] ?? "",
+    });
+
+    lastIndex = start + match[0].length;
+  }
+
+  if (lastIndex < content.length) {
+    segments.push({
+      type: "text",
+      content: content.slice(lastIndex),
+    });
+  }
+
+  return segments;
+};
+
+const renderInlineMarkdown = (content: string, keyPrefix: string) => {
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of content.matchAll(INLINE_MARKDOWN_PATTERN)) {
+    const start = match.index ?? 0;
+
+    if (start > lastIndex) {
+      nodes.push(
+        <Fragment key={`${keyPrefix}-text-${start}`}>
+          {content.slice(lastIndex, start)}
+        </Fragment>,
+      );
+    }
+
+    if (match[1] && match[2]) {
+      nodes.push(
+        <a
+          key={`${keyPrefix}-link-${start}`}
+          className="text-[var(--violet)] underline decoration-[var(--border2)] underline-offset-2"
+          href={match[2]}
+          rel="noreferrer noopener"
+          target="_blank"
+        >
+          {match[1]}
+        </a>,
+      );
+    } else if (match[3]) {
+      nodes.push(
+        <strong
+          key={`${keyPrefix}-bold-${start}`}
+          className="font-semibold text-[var(--violet)]"
+        >
+          {match[3]}
+        </strong>,
+      );
+    } else if (match[4]) {
+      nodes.push(
+        <em
+          key={`${keyPrefix}-italic-${start}`}
+          className="italic text-[var(--text-mid)]"
+        >
+          {match[4]}
+        </em>,
+      );
+    }
+
+    lastIndex = start + match[0].length;
+  }
+
+  if (lastIndex < content.length) {
+    nodes.push(
+      <Fragment key={`${keyPrefix}-tail-${lastIndex}`}>
+        {content.slice(lastIndex)}
+      </Fragment>,
+    );
+  }
+
+  return nodes;
+};
+
+const renderAssistantBody = (content: string, isStreaming?: boolean) => {
+  const segments = splitAssistantBodySegments(content);
+  const lastSegmentIndex = segments.length - 1;
+
+  if (segments.length === 0) {
+    return isStreaming ? <span className="stream-cursor" /> : null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {segments.map((segment, index) => {
+        if (segment.type === "code") {
+          return (
+            <pre
+              key={`code-${index}`}
+              className="overflow-x-auto rounded-[10px] border border-[var(--border)] bg-[var(--bg2)] px-3 py-2 text-[12px] leading-[1.55] text-[var(--text)]"
+            >
+              <code className="font-mono">
+                {segment.content}
+                {isStreaming && index === lastSegmentIndex ? <span className="stream-cursor" /> : null}
+              </code>
+            </pre>
+          );
+        }
+
+        return (
+          <div key={`text-${index}`} className="whitespace-pre-wrap">
+            {renderInlineMarkdown(segment.content, `segment-${index}`)}
+            {isStreaming && index === lastSegmentIndex ? <span className="stream-cursor" /> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const ChatMessageCard = memo(function ChatMessageCard({
   isLastAssistantMessage,
   message,
@@ -102,10 +238,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
             </p>
           ) : null}
 
-          <div className="whitespace-pre-wrap">
-            {parsedAssistantMessage?.body}
-            {message.isStreaming ? <span className="stream-cursor" /> : null}
-          </div>
+          {renderAssistantBody(parsedAssistantMessage?.body ?? "", message.isStreaming)}
 
           {parsedAssistantMessage && parsedAssistantMessage.citations.length > 0 ? (
             <div className="mt-3 flex flex-wrap gap-2">

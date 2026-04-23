@@ -142,13 +142,6 @@ export type ChatMessage = {
   streamError?: boolean;
 };
 
-export type SerializedChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: string;
-};
-
 export type SessionState = {
   transcript: TranscriptChunk[];
   suggestions: SuggestionBatch[];
@@ -177,14 +170,6 @@ export type SuggestionsRequest = {
   salient_memory?: SalientMoment[];
   session_id?: string;
   debug?: boolean;
-};
-
-export type SuggestionsResponse = {
-  success: boolean;
-  suggestions: Suggestion[];
-  meta?: SuggestionMeta;
-  timestamp: string;
-  error?: string;
 };
 
 export type RollingSummary = {
@@ -242,14 +227,6 @@ export type ChatStreamEvent =
   | {
       error: string;
     };
-
-export type SuggestionStreamDoneSummary = {
-  batch_id: string;
-  total_cards: number;
-  critique_used: boolean;
-  retry_fired: boolean;
-  meta?: SuggestionMeta;
-};
 
 export type SuggestionStreamEvent =
   | {

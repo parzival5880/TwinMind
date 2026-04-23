@@ -207,6 +207,14 @@ const createSuggestionSessionId = () =>
     ? crypto.randomUUID()
     : `suggestions-session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+const normalizePreviewPhrase = (preview: string) =>
+  preview
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 10)
+    .join(" ");
+
 type StreamHandlers = {
   onGrounding: (event: Extract<SuggestionStreamEvent, { type: "grounding" }>) => void;
   onMeta: (event: Extract<SuggestionStreamEvent, { type: "meta" }>) => void;
@@ -320,6 +328,7 @@ export function useSuggestions({
   const activeControllersRef = useRef<Map<number, AbortController>>(new Map());
   const requestSequenceRef = useRef(0);
   const sessionIdRef = useRef(createSuggestionSessionId());
+  const recentPhrasesRef = useRef<string[]>([]);
 
   // Dedup guard — prevents double-promotion from strict-mode or concurrent renders.
   const promotedBatchIdsRef = useRef<Set<string>>(new Set());
@@ -537,6 +546,7 @@ export function useSuggestions({
             verbatim_recent: verbatimRecent,
             rolling_summary: context.rollingSummary,
             recent_chat_topics: context.recentChatTopics,
+            avoid_phrases: recentPhrasesRef.current,
             meeting_type: context.meetingType ?? lastMeetingTypeRef.current,
             conversation_stage: context.conversationStage ?? lastConversationStageRef.current,
             session_id: sessionIdRef.current,
@@ -726,6 +736,15 @@ export function useSuggestions({
                 timestamp: new Date(),
               };
               committedBatch = promoted;
+              const committedPhrases = promoted.suggestions
+                .map((suggestion) => normalizePreviewPhrase(suggestion.preview))
+                .filter(Boolean);
+              if (committedPhrases.length > 0) {
+                recentPhrasesRef.current = [
+                  ...recentPhrasesRef.current,
+                  ...committedPhrases,
+                ].slice(-12);
+              }
 
               startTransition(() => {
                 setSuggestions((prev) => {
@@ -870,6 +889,7 @@ export function useSuggestions({
     lastVerbatimRef.current = "";
     backoffUntilRef.current = 0;
     consecutiveRateLimitRef.current = 0;
+    recentPhrasesRef.current = [];
   }, [cancelSuggestions]);
 
   return {

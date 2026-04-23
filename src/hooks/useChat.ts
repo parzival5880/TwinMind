@@ -71,6 +71,18 @@ const parseSseEvent = (rawEvent: string): string[] =>
 
 const CHAT_FETCH_TIMEOUT_MS_STANDARD = 25_000;
 const CHAT_FETCH_TIMEOUT_MS_EXPANDED = 45_000;
+const buildTranscriptString = (transcript: TranscriptChunk[]) =>
+  transcript
+    .map((chunk) => {
+      const speakerLabel = chunk.speaker ? `${chunk.speaker}: ` : "";
+
+      return `[${chunk.timestamp.toISOString()}] ${speakerLabel}${chunk.text}`;
+    })
+    .join("\n");
+const createChatSessionId = () =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `chat-session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function useChat(): UseChatResult {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -78,6 +90,7 @@ export function useChat(): UseChatResult {
   const [error, setError] = useState<string | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const sessionIdRef = useRef(createChatSessionId());
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -98,6 +111,11 @@ export function useChat(): UseChatResult {
     const trimmedMessage = message.trim();
 
     if (!trimmedMessage || isLoading) {
+      return;
+    }
+
+    if (transcript.length === 0 && !selectedSuggestion) {
+      setError("No transcript yet — record or select a card first");
       return;
     }
 
@@ -154,7 +172,12 @@ export function useChat(): UseChatResult {
     setIsLoading(true);
     setError(null);
 
-    abortControllerRef.current?.abort();
+    if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
+      console.info("[TwinMind][chat][client][abort]", {
+        reason: "superseded_by_new_request",
+      });
+      abortControllerRef.current.abort();
+    }
     const abortController = new AbortController();
     const chatTimeoutMs = isLargeModelExpandedContext()
       ? CHAT_FETCH_TIMEOUT_MS_EXPANDED
@@ -174,6 +197,7 @@ export function useChat(): UseChatResult {
         meta: suggestionMeta,
         chatHistory: nextHistoryMessages,
       });
+      const fullTranscript = buildTranscriptString(transcript);
       const response = await fetch("/api/chat", {
         signal: abortController.signal,
         method: "POST",
@@ -185,6 +209,8 @@ export function useChat(): UseChatResult {
           history: nextHistoryMessages,
           suggestion: selectedSuggestion,
           context,
+          full_transcript: fullTranscript,
+          session_id: sessionIdRef.current,
         }),
       });
 
@@ -287,20 +313,49 @@ export function useChat(): UseChatResult {
         caughtError instanceof Error
           ? caughtError.message
           : "Failed to generate a detailed answer.";
+      const normalizeErrorMessage = (raw: string): string => {
+        if (/content management policy/i.test(raw) || /content_filter/i.test(raw)) {
+          return "Your prompt was blocked by Azure content filtering. Try rephrasing — avoid links, sensitive terms, or long transcript quotes.";
+        }
+        if (/^Upstream 5\d\d/.test(raw)) {
+          return "The AI provider is having trouble right now. Retry in a moment.";
+        }
+        if (/^Upstream 429/.test(raw)) {
+          return "Rate limited. Wait a few seconds and retry.";
+        }
+        if (/^Upstream 401/.test(raw)) {
+          return "API key rejected. Check configuration.";
+        }
+        return raw;
+      };
+      const status =
+        typeof caughtError === "object" &&
+        caughtError !== null &&
+        "status" in caughtError &&
+        typeof (caughtError as { status?: unknown }).status === "number"
+          ? (caughtError as { status: number }).status
+          : undefined;
+      const normalizedErrorMessage = normalizeErrorMessage(errorMessage);
+
+      console.error("[TwinMind][chat][client][error]", {
+        status,
+        message: errorMessage,
+        aborted: abortController.signal.aborted,
+      });
 
       setMessages((currentMessages) =>
         currentMessages.map((currentMessage) =>
           currentMessage.id === resolvedAssistantMessageId
             ? {
                 ...currentMessage,
-                errorMessage,
+                errorMessage: normalizedErrorMessage,
                 isStreaming: false,
                 streamError: true,
               }
             : currentMessage,
         ),
       );
-      setError(errorMessage);
+      setError(normalizedErrorMessage);
     } finally {
       window.clearTimeout(abortTimeoutId);
       abortControllerRef.current = null;
