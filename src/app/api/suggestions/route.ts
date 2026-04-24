@@ -13,7 +13,9 @@ import type {
   SuggestionsRequest,
 } from "@/lib/types";
 
-export const runtime = "edge";
+// export const runtime = "edge";
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const ROLLING_SUMMARY_PHASES = new Set([
   "exploring",
