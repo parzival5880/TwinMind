@@ -834,7 +834,7 @@ export function SuggestionsPanel({
           </div>
         ) : null}
 
-        {!hasActiveStreamingBatch && hasVisibleBatches
+        {hasVisibleBatches
           ? visibleBatches.map((batch, batchIndex) => (
           <article key={batch.id}>
             {batchIndex > 0 ? (
