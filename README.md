@@ -31,7 +31,7 @@ To run entirely on Groq: leave the Azure env vars out, set `GROQ_API_KEY`, done.
 git clone https://github.com/parzival5880/TwinMind.git
 cd TwinMind
 npm install
-cp .env.local.example .env.local
+create a .env.local
 # Required:
 #   GROQ_API_KEY=...
 # Optional grounding:
@@ -42,7 +42,7 @@ cp .env.local.example .env.local
 #   AZURE_OPENAI_ENDPOINT=...
 #   AZURE_OPENAI_API_KEY=...
 #   AZURE_OPENAI_DEPLOYMENT=gpt-oss-120b
-#   AZURE_OPENAI_API_VERSION=2024-10-21
+#   AZURE_OPENAI_API_VERSION=2024-05-01-preview
 npm run dev
 ```
 
