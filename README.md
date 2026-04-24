@@ -2,7 +2,7 @@
 
 Real-time meeting copilot. Listens to live mic audio, transcribes it, surfaces 3 context-aware suggestions every 30 seconds, and turns any suggestion into a grounded deep-dive answer.
 
-- **Deployed:** https://twinmind-two.vercel.app
+- **Deployed:** [https://twinmind-two.vercel.app](https://twinmind-im6qx1l9d-parzival5880s-projects.vercel.app/)
 - **Repo:** https://github.com/parzival5880/TwinMind
 - **Get a Groq key:** https://console.groq.com
 
